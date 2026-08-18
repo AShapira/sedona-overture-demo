@@ -1,0 +1,47 @@
+services:
+  lab:
+    image: ${SEDONA_IMAGE:-docker.io/apache/sedona:1.9.0@sha256:a1acf172621652c926214259045b2324f75341026dd726db0bef7e21b4205525}
+    working_dir: /workspace
+    command:
+      - jupyter
+      - lab
+      - --ip=0.0.0.0
+      - --port=8888
+      - --no-browser
+      - --allow-root
+      - --IdentityProvider.token=
+      - --ServerApp.password=
+      - --LabApp.extension_manager=readonly
+    ports:
+      - 127.0.0.1:${JUPYTER_PORT:-8888}:8888
+      - 127.0.0.1:${SPARK_UI_PORT:-4040}:4040
+    environment:
+      PYTHONPATH: /workspace/src:/opt/spark/python
+      PYSPARK_PYTHON: python3
+      PYSPARK_DRIVER_PYTHON: python3
+      OVERTURE_RELEASE_URI: ${OVERTURE_RELEASE_URI:-/data/overture}
+      OVERTURE_RELEASE: ${OVERTURE_RELEASE:-2026-07-22.0}
+      SEDONA_SPARK_LOCAL_CORES: ${SEDONA_SPARK_LOCAL_CORES:-8}
+      SEDONA_SPARK_DRIVER_MEMORY: ${SEDONA_SPARK_DRIVER_MEMORY:-16g}
+      SEDONA_SPARK_PARTITIONS: ${SEDONA_SPARK_PARTITIONS:-16}
+      SEDONA_SPARK_LOCAL_DIR: ${SEDONA_SPARK_LOCAL_DIR:-/var/tmp/spark}
+      SEDONA_SPARK_LOG_LEVEL: ${SEDONA_SPARK_LOG_LEVEL:-ERROR}
+      FOCUS_COUNTRY_CODE: ${FOCUS_COUNTRY_CODE:-IL}
+      FOCUS_LOCALITY_EN: ${FOCUS_LOCALITY_EN:-Ashdod}
+      FOCUS_LOCALITY_COUNTRY_CODE: ${FOCUS_LOCALITY_COUNTRY_CODE:-IL}
+      ISRAEL_SAMPLE_LIMIT: ${ISRAEL_SAMPLE_LIMIT:-50000}
+      ASHDOD_SAMPLE_LIMIT: ${ASHDOD_SAMPLE_LIMIT:-10000}
+      MAP_FEATURE_LIMIT: ${MAP_FEATURE_LIMIT:-2000}
+      S3_ENDPOINT: ${S3_ENDPOINT:-}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      S3_PATH_STYLE_ACCESS: ${S3_PATH_STYLE_ACCESS:-true}
+      S3_SSL_ENABLED: ${S3_SSL_ENABLED:-false}
+    volumes:
+      - .:/workspace
+      - ${OVERTURE_RELEASE_DIR:-./data/overture/release/2026-07-22.0}:/data/overture:ro
+      - ./.cache/spark:/var/tmp/spark
+    security_opt:
+      - no-new-privileges
+    mem_limit: ${LAB_CONTAINER_MEMORY:-24g}
+    cpus: ${LAB_CONTAINER_CPUS:-8}

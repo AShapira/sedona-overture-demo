@@ -1,0 +1,22 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  structural-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Validate Python and generated notebooks
+        run: |
+          python -m compileall -q src tests scripts/sync_notebooks.py
+          python -m unittest discover -s tests -v
+          bash -n scripts/smoke-notebooks.sh
