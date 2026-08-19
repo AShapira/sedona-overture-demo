@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 def _positive_int(name: str, default: int) -> int:
@@ -15,6 +16,17 @@ def _positive_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be an integer, found {raw!r}") from exc
     if value < 1:
         raise ValueError(f"{name} must be at least 1, found {value}")
+    return value
+
+
+def _nonnegative_int(name: str, default: int) -> int:
+    raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, found {raw!r}") from exc
+    if value < 0:
+        raise ValueError(f"{name} must be at least 0, found {value}")
     return value
 
 
@@ -42,10 +54,22 @@ class LabSettings:
     locality_sample_limit: int
     map_feature_limit: int
     s3_endpoint: str | None
+    s3_region: str | None
     s3_access_key: str | None
     s3_secret_key: str | None
     s3_path_style: bool
     s3_ssl_enabled: bool
+    scratch_dir: str
+    scratch_budget_gb: int
+    scratch_reserve_gb: int
+    inventory_cache_dir: str
+    refresh_release_inventory: bool
+    inventory_include_row_counts: bool
+    require_s3_release: bool
+    write_derived: bool
+    derived_output_uri: str | None
+    allow_local_derived_fallback: bool
+    derived_local_fallback_dir: str
 
     def type_uri(self, theme: str, feature_type: str) -> str:
         return (
@@ -59,6 +83,10 @@ class LabSettings:
         values["s3_secret_key"] = "<set>" if self.s3_secret_key else None
         return values
 
+    @property
+    def storage_mode(self) -> str:
+        return "s3a" if self.release_uri.startswith("s3a://") else "local"
+
     def prepare_process_environment(self) -> None:
         """Set Spark-launch variables before importing PySpark."""
         local_dir = Path(self.spark_local_dir)
@@ -67,6 +95,24 @@ class LabSettings:
         os.environ["PYSPARK_SUBMIT_ARGS"] = (
             f"--driver-memory {self.driver_memory} pyspark-shell"
         )
+
+
+def _normalised_s3_parts(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3a" or not parsed.netloc:
+        raise ValueError(f"Expected an s3a:// URI, found {uri!r}")
+    return parsed.netloc.lower(), parsed.path.strip("/")
+
+
+def _overlapping_s3_prefixes(left: str, right: str) -> bool:
+    left_bucket, left_path = _normalised_s3_parts(left)
+    right_bucket, right_path = _normalised_s3_parts(right)
+    if left_bucket != right_bucket:
+        return False
+    left_parts = tuple(part for part in left_path.split("/") if part)
+    right_parts = tuple(part for part in right_path.split("/") if part)
+    shortest = min(len(left_parts), len(right_parts))
+    return left_parts[:shortest] == right_parts[:shortest]
 
 
 def load_settings() -> LabSettings:
@@ -100,13 +146,69 @@ def load_settings() -> LabSettings:
         locality_sample_limit=_positive_int("ASHDOD_SAMPLE_LIMIT", 10_000),
         map_feature_limit=_positive_int("MAP_FEATURE_LIMIT", 2_000),
         s3_endpoint=endpoint,
+        s3_region=os.getenv("S3_REGION") or None,
         s3_access_key=access_key,
         s3_secret_key=secret_key,
         s3_path_style=_boolean("S3_PATH_STYLE_ACCESS", True),
         s3_ssl_enabled=_boolean("S3_SSL_ENABLED", False),
+        scratch_dir=os.getenv("SEDONA_SCRATCH_DIR", "/var/tmp"),
+        scratch_budget_gb=_positive_int("SEDONA_SCRATCH_BUDGET_GB", 20),
+        scratch_reserve_gb=_nonnegative_int("SEDONA_SCRATCH_RESERVE_GB", 2),
+        inventory_cache_dir=os.getenv(
+            "RELEASE_INVENTORY_CACHE", "/var/tmp/inventory"
+        ),
+        refresh_release_inventory=_boolean(
+            "REFRESH_RELEASE_INVENTORY", False
+        ),
+        inventory_include_row_counts=_boolean(
+            "INVENTORY_INCLUDE_ROW_COUNTS", False
+        ),
+        require_s3_release=_boolean("REQUIRE_S3_RELEASE", False),
+        write_derived=_boolean("WRITE_DERIVED", False),
+        derived_output_uri=os.getenv("DERIVED_OUTPUT_URI") or None,
+        allow_local_derived_fallback=_boolean(
+            "ALLOW_LOCAL_DERIVED_FALLBACK", True
+        ),
+        derived_local_fallback_dir=os.getenv(
+            "DERIVED_LOCAL_FALLBACK_DIR", "/var/tmp/derived"
+        ),
     )
     if settings.map_feature_limit > settings.locality_sample_limit:
         raise ValueError(
             "MAP_FEATURE_LIMIT must not exceed ASHDOD_SAMPLE_LIMIT"
+        )
+    if settings.scratch_reserve_gb >= settings.scratch_budget_gb:
+        raise ValueError(
+            "SEDONA_SCRATCH_RESERVE_GB must be smaller than "
+            "SEDONA_SCRATCH_BUDGET_GB"
+        )
+    if settings.release_uri.startswith(("s3://", "s3a://")):
+        _normalised_s3_parts(settings.release_uri)
+    if settings.require_s3_release and settings.storage_mode != "s3a":
+        raise ValueError(
+            "REQUIRE_S3_RELEASE=true requires OVERTURE_RELEASE_URI to use s3a://"
+        )
+    if settings.derived_output_uri:
+        _normalised_s3_parts(settings.derived_output_uri)
+        if settings.release_uri.startswith("s3a://") and _overlapping_s3_prefixes(
+            settings.release_uri, settings.derived_output_uri
+        ):
+            raise ValueError(
+                "DERIVED_OUTPUT_URI must not equal, contain, or be contained "
+                "by OVERTURE_RELEASE_URI"
+            )
+    if (
+        settings.write_derived
+        and not settings.derived_output_uri
+        and not settings.allow_local_derived_fallback
+    ):
+        raise ValueError(
+            "WRITE_DERIVED requires DERIVED_OUTPUT_URI or enabled local fallback"
+        )
+    scratch_root = Path(settings.scratch_dir).resolve()
+    fallback_root = Path(settings.derived_local_fallback_dir).resolve()
+    if not fallback_root.is_relative_to(scratch_root):
+        raise ValueError(
+            "DERIVED_LOCAL_FALLBACK_DIR must be inside SEDONA_SCRATCH_DIR"
         )
     return settings

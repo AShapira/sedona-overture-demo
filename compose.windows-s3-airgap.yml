@@ -19,17 +19,18 @@ services:
       PYTHONPATH: /workspace/src:/opt/spark/python
       PYSPARK_PYTHON: python3
       PYSPARK_DRIVER_PYTHON: python3
-      OVERTURE_RELEASE_URI: ${OVERTURE_RELEASE_URI:-/data/overture}
+      OVERTURE_RELEASE_URI: ${OVERTURE_RELEASE_URI:?Set an s3a release URI}
       OVERTURE_RELEASE: ${OVERTURE_RELEASE:-2026-07-22.0}
+      REQUIRE_S3_RELEASE: "true"
       SEDONA_SPARK_LOCAL_CORES: ${SEDONA_SPARK_LOCAL_CORES:-8}
       SEDONA_SPARK_DRIVER_MEMORY: ${SEDONA_SPARK_DRIVER_MEMORY:-16g}
       SEDONA_SPARK_PARTITIONS: ${SEDONA_SPARK_PARTITIONS:-16}
-      SEDONA_SPARK_LOCAL_DIR: ${SEDONA_SPARK_LOCAL_DIR:-/var/tmp/spark}
+      SEDONA_SPARK_LOCAL_DIR: /scratch/spark
       SEDONA_SPARK_LOG_LEVEL: ${SEDONA_SPARK_LOG_LEVEL:-ERROR}
-      SEDONA_SCRATCH_DIR: /workspace/.artifacts
+      SEDONA_SCRATCH_DIR: /scratch
       SEDONA_SCRATCH_BUDGET_GB: ${SEDONA_SCRATCH_BUDGET_GB:-20}
       SEDONA_SCRATCH_RESERVE_GB: ${SEDONA_SCRATCH_RESERVE_GB:-2}
-      RELEASE_INVENTORY_CACHE: /workspace/.artifacts/inventory
+      RELEASE_INVENTORY_CACHE: /scratch/inventory
       REFRESH_RELEASE_INVENTORY: ${REFRESH_RELEASE_INVENTORY:-false}
       INVENTORY_INCLUDE_ROW_COUNTS: ${INVENTORY_INCLUDE_ROW_COUNTS:-false}
       FOCUS_COUNTRY_CODE: ${FOCUS_COUNTRY_CODE:-IL}
@@ -38,20 +39,23 @@ services:
       ISRAEL_SAMPLE_LIMIT: ${ISRAEL_SAMPLE_LIMIT:-50000}
       ASHDOD_SAMPLE_LIMIT: ${ASHDOD_SAMPLE_LIMIT:-10000}
       MAP_FEATURE_LIMIT: ${MAP_FEATURE_LIMIT:-2000}
-      S3_ENDPOINT: ${S3_ENDPOINT:-}
-      S3_REGION: ${S3_REGION:-}
+      S3_ENDPOINT: ${S3_ENDPOINT:?Set the air-gap S3 endpoint}
+      S3_REGION: ${S3_REGION:-us-east-1}
       S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
       S3_SECRET_KEY: ${S3_SECRET_KEY:-}
       S3_PATH_STYLE_ACCESS: ${S3_PATH_STYLE_ACCESS:-true}
-      S3_SSL_ENABLED: ${S3_SSL_ENABLED:-false}
+      S3_SSL_ENABLED: ${S3_SSL_ENABLED:-true}
       WRITE_DERIVED: ${WRITE_DERIVED:-false}
       DERIVED_OUTPUT_URI: ${DERIVED_OUTPUT_URI:-}
       ALLOW_LOCAL_DERIVED_FALLBACK: ${ALLOW_LOCAL_DERIVED_FALLBACK:-true}
-      DERIVED_LOCAL_FALLBACK_DIR: /workspace/.artifacts/derived
+      DERIVED_LOCAL_FALLBACK_DIR: /scratch/derived
     volumes:
-      - .:/workspace
-      - ${OVERTURE_RELEASE_DIR:-./data/overture/release/2026-07-22.0}:/data/overture:ro
-      - ./.cache/spark:/var/tmp/spark
+      - type: bind
+        source: .
+        target: /workspace
+      - type: bind
+        source: ${SEDONA_SCRATCH_HOST_DIR:?Set a Windows scratch directory}
+        target: /scratch
     security_opt:
       - no-new-privileges
     mem_limit: ${LAB_CONTAINER_MEMORY:-24g}

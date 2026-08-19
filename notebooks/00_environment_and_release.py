@@ -1,8 +1,9 @@
 # %% [markdown]
 # # 00 — Environment and complete release inventory
 #
-# **Execution engine:** Python/PyArrow reads Parquet footers for the inventory;
-# SedonaSpark is started only for the runtime check.
+# **Execution engine:** SedonaSpark configures the storage client. Local mode
+# reads Parquet footers with PyArrow; S3 mode inventories objects through
+# Hadoop S3A without copying the release to the container or Windows host.
 #
 # This lesson answers three questions before any analysis begins:
 #
@@ -10,15 +11,39 @@
 # 2. Which themes and feature types are physically present?
 # 3. How large are they in files, compressed bytes, and rows?
 #
-# Footer metadata is substantially cheaper than scanning feature columns. For
-# S3, create the same manifest during ingestion rather than opening hundreds of
-# remote footers every time a notebook starts.
+# S3 inventory lists object metadata and stores only a tiny aggregate JSON in
+# scratch. Exact remote row counts are optional because they open every
+# feature-type dataset; set `INVENTORY_INCLUDE_ROW_COUNTS=true` when required.
 
 # %%
 from overture_lab.config import load_settings
+from overture_lab.scratch import scratch_status
 
 settings = load_settings()
-settings.public_dict()
+{
+    "settings": settings.public_dict(),
+    "scratch": scratch_status(settings).as_dict(),
+}
+
+# %% [markdown]
+# ## Start the configured SedonaSpark engine
+#
+# Spark must exist before an S3A inventory because its Hadoop configuration
+# owns the endpoint, credential provider, TLS, and path-style settings. A fresh
+# kernel is required after changing driver memory, cores, or S3 settings.
+
+# %%
+from overture_lab.spark import create_sedona
+
+spark = create_sedona(settings, "00-environment-and-release")
+{
+    "spark_version": spark.version,
+    "master": spark.sparkContext.master,
+    "storage_mode": settings.storage_mode,
+    "driver_memory": spark.conf.get("spark.driver.memory"),
+    "shuffle_partitions": spark.conf.get("spark.sql.shuffle.partitions"),
+    "default_parallelism": spark.sparkContext.defaultParallelism,
+}
 
 # %% [markdown]
 # ## Inventory the raw immutable release
@@ -28,15 +53,27 @@ settings.public_dict()
 # 569 GiB tree as one undifferentiated DataFrame.
 
 # %%
-from overture_lab.catalog import local_release_inventory
+from overture_lab.catalog import release_inventory, validate_curriculum_types
 
-inventory = local_release_inventory(settings.release_uri)
+inventory = release_inventory(spark, settings)
+validate_curriculum_types(inventory)
+print(f"Inventory source: {inventory.attrs['source']}")
+if inventory.attrs.get("cache_path"):
+    print(f"Inventory cache: {inventory.attrs['cache_path']}")
 display(inventory)
-display(
+theme_inventory = (
     inventory.groupby("theme", as_index=False)
-    .agg(types=("type", "count"), files=("files", "sum"), rows=("rows", "sum"), compressed_gib=("compressed_gib", "sum"))
+    .agg(
+        types=("type", "count"),
+        files=("files", "sum"),
+        compressed_gib=("compressed_gib", "sum"),
+    )
     .sort_values("compressed_gib", ascending=False)
 )
+if inventory["rows"].notna().all():
+    row_totals = inventory.groupby("theme", as_index=False)["rows"].sum()
+    theme_inventory = theme_inventory.merge(row_totals, on="theme")
+display(theme_inventory)
 
 # %% [markdown]
 # ## Visualise scale before visualising geography
@@ -53,25 +90,6 @@ axis = inventory.sort_values("compressed_gib").plot.barh(
 axis.set_title(f"Overture {settings.release}: compressed size by feature type")
 axis.set_xlabel("GiB")
 plt.tight_layout()
-
-# %% [markdown]
-# ## Start the configured SedonaSpark engine
-#
-# The lab uses local Spark inside the container. CPU, memory, shuffle
-# partitions, and scratch storage all come from environment variables. A fresh
-# kernel is required after changing driver memory or core count.
-
-# %%
-from overture_lab.spark import create_sedona
-
-spark = create_sedona(settings, "00-environment-and-release")
-{
-    "spark_version": spark.version,
-    "master": spark.sparkContext.master,
-    "driver_memory": spark.conf.get("spark.driver.memory"),
-    "shuffle_partitions": spark.conf.get("spark.sql.shuffle.partitions"),
-    "default_parallelism": spark.sparkContext.defaultParallelism,
-}
 
 # %% [markdown]
 # ## Reading rule used throughout the curriculum

@@ -32,9 +32,19 @@ for notebook in "$@"; do
     -e SEDONA_SPARK_PARTITIONS="${SEDONA_SPARK_PARTITIONS:-4}" \
     -e SEDONA_SPARK_LOCAL_DIR=/var/tmp/spark \
     -e SEDONA_SPARK_LOG_LEVEL=ERROR \
+    -e SEDONA_SCRATCH_DIR=/var/tmp \
+    -e SEDONA_SCRATCH_BUDGET_GB="${SEDONA_SCRATCH_BUDGET_GB:-20}" \
+    -e SEDONA_SCRATCH_RESERVE_GB="${SEDONA_SCRATCH_RESERVE_GB:-2}" \
+    -e RELEASE_INVENTORY_CACHE=/var/tmp/inventory \
+    -e REFRESH_RELEASE_INVENTORY="${REFRESH_RELEASE_INVENTORY:-false}" \
+    -e INVENTORY_INCLUDE_ROW_COUNTS="${INVENTORY_INCLUDE_ROW_COUNTS:-false}" \
     -e ISRAEL_SAMPLE_LIMIT="${ISRAEL_SAMPLE_LIMIT:-200}" \
     -e ASHDOD_SAMPLE_LIMIT="${ASHDOD_SAMPLE_LIMIT:-100}" \
     -e MAP_FEATURE_LIMIT="${MAP_FEATURE_LIMIT:-50}" \
+    -e WRITE_DERIVED="${WRITE_DERIVED:-false}" \
+    -e DERIVED_OUTPUT_URI="${DERIVED_OUTPUT_URI:-}" \
+    -e ALLOW_LOCAL_DERIVED_FALLBACK="${ALLOW_LOCAL_DERIVED_FALLBACK:-true}" \
+    -e DERIVED_LOCAL_FALLBACK_DIR=/var/tmp/derived \
     -v "${project_dir}:/workspace" \
     -v "${release_dir}:/data/overture:ro" \
     -v "${project_dir}/.cache/spark:/var/tmp/spark" \

@@ -1,0 +1,12 @@
+services:
+  lab:
+    environment:
+      JAVA_TOOL_OPTIONS: >-
+        -Djavax.net.ssl.trustStore=/run/s3-truststore/truststore.p12
+        -Djavax.net.ssl.trustStoreType=PKCS12
+        -Djavax.net.ssl.trustStorePassword=${S3_TRUSTSTORE_PASSWORD:-changeit}
+    volumes:
+      - type: bind
+        source: ${S3_TRUSTSTORE_HOST_PATH:?Set the PKCS12 truststore path}
+        target: /run/s3-truststore/truststore.p12
+        read_only: true

@@ -2,7 +2,8 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona on rootless Podman.
+Apache Sedona. The same ten lessons support a read-only filesystem release or
+an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
 do not assume that all of it fits in memory: they read one Hive-partitioned
@@ -28,7 +29,7 @@ Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included
 sync script; Jupytext is not required in the air gap.
 
-## Start in VS Code
+## Start with a local release
 
 1. Copy `.env.example` to `.env` and adjust the host data path and resources.
 2. Start the lab:
@@ -50,6 +51,50 @@ Stop it with:
 podman-compose --env-file .env down
 ```
 
+## Start on Windows Docker Desktop with S3-only data
+
+This mode mounts the repository and one disposable scratch directory. It does
+not mount or download the Overture release. In PowerShell:
+
+```powershell
+Copy-Item .env.windows-s3-airgap.example .env.windows-s3-airgap
+New-Item -ItemType Directory -Force C:\sedona-overture-scratch
+```
+
+Edit `.env.windows-s3-airgap` with the real `s3a://` release root, endpoint,
+region, and credentials, then start the pinned image already imported into the
+air gap:
+
+```powershell
+docker compose --env-file .env.windows-s3-airgap `
+  -f compose.windows-s3-airgap.yml up -d
+```
+
+Open `http://127.0.0.1:8888/lab`. Notebook 00 performs the storage and scratch
+preflight, inventories `theme=*/type=*/*.parquet` through Hadoop S3A, and caches
+only a small aggregate JSON under the scratch mount. The default inventory
+does not calculate remote row counts; set `INVENTORY_INCLUDE_ROW_COUNTS=true`
+only when opening every feature-type dataset is intentional.
+
+After interactive setup is proven, execute the two target smoke lessons and a
+final scratch check with:
+
+```powershell
+./scripts/smoke-notebooks-s3.ps1
+```
+
+For a private HTTPS endpoint whose CA is not already trusted by Java, supply a
+PKCS12 truststore and add the TLS override:
+
+```powershell
+docker compose --env-file .env.windows-s3-airgap `
+  -f compose.windows-s3-airgap.yml `
+  -f compose.windows-s3-airgap-tls.yml up -d
+```
+
+The server is tokenless for local workstation use and is bound only to
+loopback. Do not expose port 8888 to another host or network.
+
 ## Configuration
 
 Important variables are documented in `.env.example`. In particular:
@@ -63,10 +108,24 @@ Important variables are documented in `.env.example`. In particular:
   separate medium, small, and browser-safe data sizes.
 - `FOCUS_COUNTRY_CODE`, `FOCUS_LOCALITY_EN`, and `FOCUS_LOCALITY_COUNTRY_CODE`
   make the geographic focus explicit.
+- `SEDONA_SCRATCH_BUDGET_GB` and `SEDONA_SCRATCH_RESERVE_GB` guard the
+  namespaced scratch tree before work begins. Docker bind mounts do not expose
+  a portable hard per-directory quota, so the lab never claims this is a
+  filesystem-enforced limit and never deletes host scratch automatically.
+- `DERIVED_OUTPUT_URI` is an optional S3A prefix separate from the immutable
+  release. `WRITE_DERIVED` remains false by default.
 
-For S3-compatible storage, set the endpoint and credentials only in `.env`.
-That file is ignored by Git. The Sedona 1.9.0 image already contains the
-Hadoop S3A and AWS SDK jars, so no online dependency download is needed.
+For S3-compatible storage, set the endpoint and credentials only in the
+ignored `.env.windows-s3-airgap` file. The Sedona 1.9.0 image already contains
+the Hadoop S3A and AWS SDK jars, so no online dependency download is needed.
+Diagnostics redact both credential values.
+
+Notebook 08 is read-only unless explicitly enabled. It first creates and
+deletes a unique permission marker below the derived prefix. A clean create
+denial may fall back to `/scratch/derived`; cleanup failures or a data write
+that has already started stop immediately and report the partial S3 prefix.
+Every successful run uses a new directory and is verified by `_SUCCESS` and a
+read-back row count, so no previous derivative is overwritten.
 
 ## Deliberate scale levels
 
@@ -97,11 +156,27 @@ Run fast structural tests:
 python3 -m unittest discover -s tests -v
 ```
 
+Render only the Windows Compose image reference without printing the
+credential-bearing environment:
+
+```powershell
+docker compose --env-file .env.windows-s3-airgap `
+  -f compose.windows-s3-airgap.yml config --images
+```
+
 Run a real Ashdod smoke execution in the already-present air-gap image:
 
 ```bash
 scripts/smoke-notebooks.sh notebooks/00_environment_and_release.ipynb \
   notebooks/05_divisions.ipynb
+```
+
+When the pinned Sedona and MinIO images are already present, validate the S3A
+inventory, one GeoParquet read, permission probe, S3 write, and read-back check
+without external network access:
+
+```bash
+scripts/test-local-s3.sh
 ```
 
 Executed notebooks go under `.artifacts/executed/`, not into the source

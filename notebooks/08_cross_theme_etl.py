@@ -13,10 +13,9 @@
 # identifier.
 
 # %%
-import os
-from pathlib import Path
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
+from overture_lab.outputs import write_derived
 from overture_lab.spark import create_sedona, read_type
 from overture_lab.regions import resolve_focus_regions, bounded_sample
 
@@ -106,16 +105,17 @@ display(quality.toPandas())
 # ## Optional write
 #
 # Writes are off by default so opening a lesson does not mutate project data.
-# When enabled, this produces a derivative GeoParquet directory under the
-# ignored `.artifacts` tree. Production ETL should also record release ID,
-# code revision, configuration, row counts, and checksums in a manifest.
+# When enabled, the helper probes the configured derived S3 prefix, writes a
+# new run-specific directory, and verifies it by reading the row count back.
+# If the probe is denied before a data write begins, it may fall back to the
+# bounded `/scratch/derived` area. A started or ambiguous S3 failure never
+# triggers a second local write.
 
 # %%
-WRITE_DERIVED = os.getenv("WRITE_DERIVED", "false").lower() == "true"
-output_path = Path("/workspace/.artifacts/derived/ashdod_place_building.geoparquet")
-if WRITE_DERIVED:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    associated.write.mode("overwrite").format("geoparquet").save(str(output_path))
-    print(f"Wrote {output_path}")
-else:
-    print(f"Dry run: set WRITE_DERIVED=true to write {output_path}")
+write_result = write_derived(
+    associated,
+    spark,
+    settings,
+    dataset_name="ashdod_place_building",
+)
+write_result.as_dict()

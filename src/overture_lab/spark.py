@@ -6,12 +6,14 @@ import os
 from typing import TYPE_CHECKING
 
 from .config import LabSettings
+from .scratch import scratch_status
 
 if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
 
 
 def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
+    scratch_status(settings)
     settings.prepare_process_environment()
 
     from pyspark import SparkContext
@@ -37,6 +39,10 @@ def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
             builder = builder.config(
                 "spark.hadoop.fs.s3a.endpoint", settings.s3_endpoint
             )
+        if settings.s3_region:
+            builder = builder.config(
+                "spark.hadoop.fs.s3a.endpoint.region", settings.s3_region
+            )
         builder = (
             builder.config(
                 "spark.hadoop.fs.s3a.path.style.access",
@@ -46,19 +52,15 @@ def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
                 "spark.hadoop.fs.s3a.connection.ssl.enabled",
                 str(settings.s3_ssl_enabled).lower(),
             )
+            .config("spark.hadoop.fs.s3a.connection.maximum", "16")
         )
         if settings.s3_access_key and settings.s3_secret_key:
-            builder = (
-                builder.config(
-                    "spark.hadoop.fs.s3a.aws.credentials.provider",
-                    "org.apache.hadoop.fs.s3a.SimpleAWSCredentialsProvider",
-                )
-                .config(
-                    "spark.hadoop.fs.s3a.access.key", settings.s3_access_key
-                )
-                .config(
-                    "spark.hadoop.fs.s3a.secret.key", settings.s3_secret_key
-                )
+            os.environ["AWS_ACCESS_KEY_ID"] = settings.s3_access_key
+            os.environ["AWS_SECRET_ACCESS_KEY"] = settings.s3_secret_key
+            builder = builder.config(
+                "spark.hadoop.fs.s3a.aws.credentials.provider",
+                "software.amazon.awssdk.auth.credentials."
+                "EnvironmentVariableCredentialsProvider",
             )
         else:
             builder = builder.config(
