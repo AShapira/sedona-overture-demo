@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same eleven lessons support a read-only filesystem release
+Apache Sedona. The same twelve lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -25,6 +25,7 @@ only collect explicitly bounded results for tables or maps.
 | `08_cross_theme_etl` | Reusable spatial ETL and cross-theme derivation |
 | `09_heavy_visualization` | Safe collection, aggregation, simplification and maps |
 | `10_standalone_sedonaspark_clipped_roads` | Regional road clipping, named S3 exports, large maps |
+| `11_world_airports_and_medium_runways` | Worldwide airport Places, regional runways, named GeoParquet exports and maps |
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included
@@ -142,6 +143,16 @@ removes Spark metadata, and validates both objects by reading them back. The
 CSV stores geometry as quoted WKT. This serial finalisation is slower than
 normal parallel Spark output and should be used only when downstream consumers
 require one object per format.
+
+Notebook 11 selects every worldwide Place whose `basic_category` is `airport`
+and retains the complete source row for downstream refinement. It also selects
+complete infrastructure runway geometries (`subtype=airport`, `class=runway`)
+that intersect the configured medium-state land areas, using bbox pruning
+before the exact spatial predicate. Each enabled export has its own unique run
+prefix containing exactly one named GeoParquet object: `airports.geoparquet`
+or `runways.geoparquet`. Both use GeoParquet 1.1 bbox covering metadata and the
+same mandatory-S3, no-local-fallback safety policy as notebook 10. Runway maps
+are offline and browser collection is capped by `MAP_FEATURE_LIMIT`.
 
 ## Deliberate scale levels
 

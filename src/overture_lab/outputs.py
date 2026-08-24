@@ -48,6 +48,18 @@ class SingleFileExportResult:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SingleGeoParquetExportResult:
+    status: str
+    run_prefix: str | None
+    geoparquet_uri: str | None
+    row_count: int | None
+    detail: str
+
+    def as_dict(self) -> dict[str, object]:
+        return asdict(self)
+
+
 SINGLE_FILE_CSV_COLUMNS = (
     "road_id",
     "source_segment_id",
@@ -212,6 +224,208 @@ def _promote_single_part(
         raise RuntimeError(
             f"Promoted S3 object is missing after rename: {destination_uri}"
         )
+
+
+def _geoparquet_metadata(spark, geoparquet_uri: str) -> dict[str, object]:
+    """Read the GeoParquet JSON metadata from a named Parquet object's footer."""
+    path = spark._jvm.org.apache.hadoop.fs.Path(geoparquet_uri)
+    converter = (
+        spark._jvm.org.apache.parquet.format.converter.ParquetMetadataConverter
+    )
+    footer = spark._jvm.org.apache.parquet.hadoop.ParquetFileReader.readFooter(
+        spark._jsc.hadoopConfiguration(),
+        path,
+        converter.NO_FILTER,
+    )
+    geo_json = footer.getFileMetaData().getKeyValueMetaData().get("geo")
+    if not geo_json:
+        raise RuntimeError("GeoParquet output footer has no geo metadata")
+    try:
+        metadata = json.loads(geo_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError("GeoParquet output has invalid geo metadata JSON") from exc
+    if not isinstance(metadata, dict):
+        raise RuntimeError("GeoParquet output geo metadata is not an object")
+    return metadata
+
+
+def _verify_single_geoparquet(
+    spark,
+    *,
+    run_prefix: str,
+    geoparquet_uri: str,
+    object_name: str,
+    expected_rows: int,
+    expected_schema: tuple[tuple[str, str], ...],
+) -> None:
+    from pyspark.sql import functions as F
+
+    written = spark.read.format("geoparquet").load(geoparquet_uri)
+    actual_columns = tuple(written.columns)
+    expected_types = dict(expected_schema)
+    required_columns = set(expected_types) | {"geometry_bbox"}
+    if (
+        len(actual_columns) != len(required_columns)
+        or set(actual_columns) != required_columns
+    ):
+        raise RuntimeError(
+            "GeoParquet read-back schema mismatch: expected exactly "
+            f"{sorted(required_columns)}, found {sorted(actual_columns)}"
+        )
+    actual_types = {
+        field.name: field.dataType.json()
+        for field in written.schema.fields
+        if field.name != "geometry_bbox"
+    }
+    if actual_types != expected_types:
+        raise RuntimeError(
+            "GeoParquet read-back data types do not match the input schema: "
+            f"expected {expected_types}, found {actual_types}"
+        )
+    validation = written.agg(
+        F.count("*").alias("row_count"),
+        F.sum(
+            F.when(
+                F.expr(
+                    "geometry IS NULL "
+                    "OR ST_IsEmpty(geometry) "
+                    "OR NOT ST_IsValid(geometry) "
+                    "OR ST_SRID(geometry) <> 4326 "
+                    "OR geometry_bbox IS NULL"
+                ),
+                1,
+            ).otherwise(0)
+        ).alias("invalid_rows"),
+    ).first()
+    if int(validation.row_count) != expected_rows:
+        raise RuntimeError(
+            "GeoParquet read-back row count mismatch: expected "
+            f"{expected_rows}, found {validation.row_count}"
+        )
+    if int(validation.invalid_rows or 0) != 0:
+        raise RuntimeError(
+            "GeoParquet read-back contains "
+            f"{validation.invalid_rows} invalid rows"
+        )
+
+    metadata = _geoparquet_metadata(spark, geoparquet_uri)
+    if metadata.get("version") != "1.1.0":
+        raise RuntimeError(
+            "GeoParquet output is not version 1.1.0: "
+            f"{metadata.get('version')!r}"
+        )
+    primary_column = metadata.get("primary_column")
+    columns_metadata = metadata.get("columns", {})
+    geometry_metadata = (
+        columns_metadata.get(primary_column, {})
+        if isinstance(columns_metadata, dict)
+        else {}
+    )
+    bbox_covering = geometry_metadata.get("covering", {}).get("bbox", {})
+    expected_covering = {
+        axis: ["geometry_bbox", axis]
+        for axis in ("xmin", "ymin", "xmax", "ymax")
+    }
+    if primary_column != "geometry" or bbox_covering != expected_covering:
+        raise RuntimeError(
+            "GeoParquet output has no valid geometry_bbox covering metadata"
+        )
+
+    run = spark._jvm.org.apache.hadoop.fs.Path(run_prefix)
+    filesystem = run.getFileSystem(spark._jsc.hadoopConfiguration())
+    names = sorted(
+        status.getPath().getName()
+        for status in filesystem.listStatus(run)
+        if status.isFile()
+    )
+    if names != [object_name]:
+        raise RuntimeError(
+            f"Expected exactly {[object_name]} at {run_prefix}, found {names}"
+        )
+
+
+def write_single_geoparquet(
+    dataframe,
+    spark,
+    settings: LabSettings,
+    *,
+    dataset_name: str,
+    object_name: str,
+) -> SingleGeoParquetExportResult:
+    """Write and verify one named GeoParquet 1.1 object in a unique S3 run."""
+    if "geometry" not in dataframe.columns:
+        raise ValueError("Single GeoParquet export requires a geometry column")
+    if "geometry_bbox" in dataframe.columns:
+        raise ValueError(
+            "geometry_bbox is reserved for the GeoParquet covering column"
+        )
+    if _safe_component(object_name) != object_name or not object_name.endswith(
+        ".geoparquet"
+    ):
+        raise ValueError(
+            "object_name must be a safe basename ending in .geoparquet"
+        )
+    if not settings.write_derived:
+        return SingleGeoParquetExportResult(
+            status="dry-run",
+            run_prefix=None,
+            geoparquet_uri=None,
+            row_count=None,
+            detail=(
+                "Set WRITE_DERIVED=true and DERIVED_OUTPUT_URI to write the "
+                "single-file S3 export."
+            ),
+        )
+    if not settings.derived_output_uri:
+        raise ValueError(
+            "WRITE_DERIVED=true single GeoParquet exports require "
+            "DERIVED_OUTPUT_URI"
+        )
+    if not _s3_permission_probe(spark, settings.derived_output_uri):
+        raise RuntimeError(
+            "The configured DERIVED_OUTPUT_URI denied the clean S3 write probe; "
+            "single GeoParquet exports do not use local fallback"
+        )
+
+    run_prefix = _single_file_run_prefix(settings, dataset_name)
+    geoparquet_uri = f"{run_prefix}/{object_name}"
+    row_count = dataframe.count()
+    try:
+        _promote_single_part(
+            dataframe,
+            spark,
+            staging_uri=f"{run_prefix}/._geoparquet_staging",
+            destination_uri=geoparquet_uri,
+            output_format="geoparquet",
+            options={
+                "compression": "zstd",
+                "geoparquet.version": "1.1.0",
+                "geoparquet.covering.mode": "auto",
+            },
+        )
+        _verify_single_geoparquet(
+            spark,
+            run_prefix=run_prefix,
+            geoparquet_uri=geoparquet_uri,
+            object_name=object_name,
+            expected_rows=row_count,
+            expected_schema=tuple(
+                (field.name, field.dataType.json())
+                for field in dataframe.schema.fields
+            ),
+        )
+    except Exception as exc:
+        raise RuntimeError(
+            "Single GeoParquet S3 export started but did not verify. No local "
+            f"fallback was attempted; inspect partial prefix {run_prefix}"
+        ) from exc
+    return SingleGeoParquetExportResult(
+        status="written",
+        run_prefix=run_prefix,
+        geoparquet_uri=geoparquet_uri,
+        row_count=row_count,
+        detail="One named S3 object and its read-back validation succeeded.",
+    )
 
 
 def _verify_single_file_exports(

@@ -184,12 +184,222 @@ def main() -> int:
         schema=segment_schema,
     )
 
+    names_type = pa.struct(
+        [
+            pa.field("primary", pa.string()),
+            pa.field("common", pa.map_(pa.string(), pa.string())),
+        ]
+    )
+    categories_type = pa.struct(
+        [
+            pa.field("primary", pa.string()),
+            pa.field("alternate", pa.list_(pa.string())),
+        ]
+    )
+    address_type = pa.struct(
+        [
+            pa.field("freeform", pa.string()),
+            pa.field("locality", pa.string()),
+            pa.field("postcode", pa.string()),
+            pa.field("region", pa.string()),
+            pa.field("country", pa.string()),
+        ]
+    )
+    place_schema = geo_schema(
+        [
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("geometry", pa.binary(), nullable=False),
+            pa.field("categories", categories_type),
+            pa.field("confidence", pa.float64()),
+            pa.field("websites", pa.list_(pa.string())),
+            pa.field("emails", pa.list_(pa.string())),
+            pa.field("socials", pa.list_(pa.string())),
+            pa.field("phones", pa.list_(pa.string())),
+            pa.field("brand", pa.struct([pa.field("names", names_type)])),
+            pa.field("addresses", pa.list_(address_type)),
+            pa.field("names", names_type),
+            pa.field("sources", pa.list_(pa.string())),
+            pa.field("operating_status", pa.string()),
+            pa.field("basic_category", pa.string()),
+            pa.field("taxonomy", pa.string()),
+            pa.field("version", pa.int32()),
+            pa.field("bbox", bbox_type, nullable=False),
+        ],
+        ["Point"],
+    )
+    place_rows = []
+    for (
+        feature_id,
+        longitude,
+        latitude,
+        basic_category,
+        primary_category,
+        confidence,
+        operating_status,
+        country,
+    ) in (
+        (
+            "world-airport-one",
+            34.55,
+            32.45,
+            "airport",
+            "airport",
+            0.95,
+            "open",
+            "AA",
+        ),
+        (
+            "world-airport-two",
+            -73.78,
+            40.64,
+            "airport",
+            "airport_terminal",
+            0.8,
+            None,
+            "US",
+        ),
+        (
+            "not-an-airport",
+            34.6,
+            32.5,
+            "restaurant",
+            "restaurant",
+            0.7,
+            "open",
+            "AA",
+        ),
+    ):
+        place_rows.append(
+            {
+                "id": feature_id,
+                "geometry": point_wkb(longitude, latitude),
+                "categories": {
+                    "primary": primary_category,
+                    "alternate": [],
+                },
+                "confidence": confidence,
+                "websites": [],
+                "emails": [],
+                "socials": [],
+                "phones": [],
+                "brand": None,
+                "addresses": [
+                    {
+                        "freeform": None,
+                        "locality": None,
+                        "postcode": None,
+                        "region": None,
+                        "country": country,
+                    }
+                ],
+                "names": {
+                    "primary": feature_id.replace("-", " ").title(),
+                    "common": {"en": feature_id},
+                },
+                "sources": ["fixture"],
+                "operating_status": operating_status,
+                "basic_category": basic_category,
+                "taxonomy": "fixture",
+                "version": 1,
+                "bbox": bounds([(longitude, latitude)]),
+            }
+        )
+    place_table = pa.Table.from_pylist(place_rows, schema=place_schema)
+
+    infrastructure_schema = geo_schema(
+        [
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("geometry", pa.binary(), nullable=False),
+            pa.field("sources", pa.list_(pa.string())),
+            pa.field("names", names_type),
+            pa.field("level", pa.int32()),
+            pa.field("wikidata", pa.string()),
+            pa.field("source_tags", pa.map_(pa.string(), pa.string())),
+            pa.field("subtype", pa.string(), nullable=False),
+            pa.field("class", pa.string(), nullable=False),
+            pa.field("height", pa.float64()),
+            pa.field("surface", pa.string()),
+            pa.field("version", pa.int32()),
+            pa.field("bbox", bbox_type, nullable=False),
+        ],
+        ["LineString", "Polygon"],
+    )
+    inside_runway = [(34.2, 32.2), (34.8, 32.8)]
+    crossing_runway = [
+        (33.8, 32.35),
+        (34.2, 32.35),
+        (34.2, 32.45),
+        (33.8, 32.45),
+        (33.8, 32.35),
+    ]
+    outside_runway = [(36.0, 32.2), (36.5, 32.2)]
+    taxiway = [(34.3, 32.6), (34.7, 32.6)]
+    infrastructure_rows = []
+    for feature_id, feature_class, surface, points, geometry in (
+        (
+            "inside-runway",
+            "runway",
+            "asphalt",
+            inside_runway,
+            line_wkb(inside_runway),
+        ),
+        (
+            "crossing-runway",
+            "runway",
+            None,
+            crossing_runway,
+            polygon_wkb(crossing_runway),
+        ),
+        (
+            "outside-runway",
+            "runway",
+            "gravel",
+            outside_runway,
+            line_wkb(outside_runway),
+        ),
+        (
+            "excluded-taxiway",
+            "taxiway",
+            "asphalt",
+            taxiway,
+            line_wkb(taxiway),
+        ),
+    ):
+        infrastructure_rows.append(
+            {
+                "id": feature_id,
+                "geometry": geometry,
+                "sources": ["fixture"],
+                "names": {
+                    "primary": feature_id.replace("-", " ").title(),
+                    "common": {"en": feature_id},
+                },
+                "level": None,
+                "wikidata": None,
+                "source_tags": {},
+                "subtype": "airport",
+                "class": feature_class,
+                "height": None,
+                "surface": surface,
+                "version": 1,
+                "bbox": bounds(points),
+            }
+        )
+    infrastructure_table = pa.Table.from_pylist(
+        infrastructure_rows,
+        schema=infrastructure_schema,
+    )
+
     for theme, feature_type in sorted(REQUIRED_RELEASE_TYPES):
         leaf = args.output / f"theme={theme}" / f"type={feature_type}"
         leaf.mkdir(parents=True, exist_ok=True)
         table = default_table
         if (theme, feature_type) == ("divisions", "division_area"):
             table = division_table
+        elif (theme, feature_type) == ("places", "place"):
+            table = place_table
+        elif (theme, feature_type) == ("base", "infrastructure"):
+            table = infrastructure_table
         elif (theme, feature_type) == ("transportation", "segment"):
             table = segment_table
         pq.write_table(table, leaf / "part-00000.parquet", compression="zstd")

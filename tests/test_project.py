@@ -17,9 +17,11 @@ from overture_lab.config import CitySpec, load_settings  # noqa: E402
 from overture_lab.catalog import aggregate_s3_objects  # noqa: E402
 from overture_lab.outputs import (  # noqa: E402
     SINGLE_FILE_CSV_COLUMNS,
+    SingleGeoParquetExportResult,
     _single_file_run_prefix,
     is_permission_error,
     write_single_file_exports,
+    write_single_geoparquet,
 )
 from overture_lab.regions import (  # noqa: E402
     Bounds,
@@ -276,6 +278,102 @@ class ConfigurationTests(unittest.TestCase):
                 dataframe, None, settings, dataset_name="clipped_roads"
             )
 
+    def test_single_geoparquet_result_contract(self):
+        result = SingleGeoParquetExportResult(
+            status="written",
+            run_prefix="s3a://maps/derived/run=one",
+            geoparquet_uri="s3a://maps/derived/run=one/airports.geoparquet",
+            row_count=3,
+            detail="verified",
+        )
+        self.assertEqual(
+            result.as_dict(),
+            {
+                "status": "written",
+                "run_prefix": "s3a://maps/derived/run=one",
+                "geoparquet_uri": (
+                    "s3a://maps/derived/run=one/airports.geoparquet"
+                ),
+                "row_count": 3,
+                "detail": "verified",
+            },
+        )
+
+    def test_single_geoparquet_dry_run_has_no_destination(self):
+        dataframe = type(
+            "AirportFrame",
+            (),
+            {"columns": ["id", "geometry", "basic_category"]},
+        )()
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+        result = write_single_geoparquet(
+            dataframe,
+            None,
+            settings,
+            dataset_name="world_airports",
+            object_name="airports.geoparquet",
+        )
+        self.assertEqual(result.status, "dry-run")
+        self.assertIsNone(result.run_prefix)
+        self.assertIsNone(result.geoparquet_uri)
+        self.assertIsNone(result.row_count)
+
+    def test_single_geoparquet_requires_s3_destination_when_enabled(self):
+        dataframe = type(
+            "AirportFrame", (), {"columns": ["id", "geometry"]}
+        )()
+        with patch.dict(
+            os.environ,
+            test_environment(WRITE_DERIVED="true"),
+            clear=True,
+        ):
+            settings = load_settings()
+        with self.assertRaisesRegex(ValueError, "require DERIVED_OUTPUT_URI"):
+            write_single_geoparquet(
+                dataframe,
+                None,
+                settings,
+                dataset_name="world_airports",
+                object_name="airports.geoparquet",
+            )
+
+    def test_single_geoparquet_rejects_reserved_or_unsafe_columns_and_names(self):
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+        with self.assertRaisesRegex(ValueError, "geometry column"):
+            write_single_geoparquet(
+                type("Frame", (), {"columns": ["id"]})(),
+                None,
+                settings,
+                dataset_name="world_airports",
+                object_name="airports.geoparquet",
+            )
+        with self.assertRaisesRegex(ValueError, "reserved"):
+            write_single_geoparquet(
+                type(
+                    "Frame",
+                    (),
+                    {"columns": ["id", "geometry", "geometry_bbox"]},
+                )(),
+                None,
+                settings,
+                dataset_name="world_airports",
+                object_name="airports.geoparquet",
+            )
+        for object_name in ("../airports.geoparquet", "airports.parquet"):
+            with self.subTest(object_name=object_name):
+                with self.assertRaisesRegex(ValueError, "safe basename"):
+                    write_single_geoparquet(
+                        type(
+                            "Frame", (), {"columns": ["id", "geometry"]}
+                        )(),
+                        None,
+                        settings,
+                        dataset_name="world_airports",
+                        object_name=object_name,
+                    )
+
     def test_s3_inventory_aggregates_only_hive_parquet_leaves(self):
         totals = aggregate_s3_objects(
             [
@@ -332,7 +430,7 @@ class ConfigurationTests(unittest.TestCase):
 
 class NotebookTests(unittest.TestCase):
     def test_expected_curriculum_exists_and_is_valid_json(self):
-        expected = [f"{number:02d}" for number in range(11)]
+        expected = [f"{number:02d}" for number in range(12)]
         found = sorted(path.name[:2] for path in (ROOT / "notebooks").glob("*.ipynb"))
         self.assertEqual(found, expected)
         for path in (ROOT / "notebooks").glob("*.ipynb"):
