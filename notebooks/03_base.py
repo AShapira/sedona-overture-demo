@@ -13,12 +13,12 @@ from functools import reduce
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.spark import create_sedona
-from overture_lab.regions import resolve_focus_regions
+from overture_lab.regions import resolve_scale_regions
 from overture_lab.lesson import inspect_type
 
 settings = load_settings()
 spark = create_sedona(settings, "03-base")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 
 BASE_TYPES = [
     "bathymetry",
@@ -54,10 +54,11 @@ for feature_type, item in lessons.items():
     display(item["schema"])
 
 # %% [markdown]
-# ## Which types intersect Ashdod?
+# ## Which types intersect the configured small areas?
 #
 # A zero is a valid result for this scope—bathymetry, for example, need not
-# intersect a land locality. Each count is capped at `ASHDOD_SAMPLE_LIMIT` and
+# intersect the configured land areas. Each count is capped at
+# `SMALL_SAMPLE_LIMIT` and
 # therefore reads “rows retained in the teaching sample,” not total rows.
 
 # %%
@@ -66,10 +67,10 @@ for feature_type, item in lessons.items():
     sample_summary.append(
         {
             "type": feature_type,
-            "sample_rows": item["locality"].count(),
+            "sample_rows": item["small"].count(),
             "geometry_types": [
                 row.geometry_type
-                for row in item["locality"]
+                for row in item["small"]
                 .select(F.expr("ST_GeometryType(geometry)").alias("geometry_type"))
                 .distinct()
                 .collect()
@@ -87,7 +88,7 @@ for feature_type, item in lessons.items():
     if group_columns:
         print(f"\n### {feature_type}")
         display(
-            item["country"].groupBy(*group_columns).count().orderBy(F.desc("count")).limit(15).toPandas()
+            item["medium"].groupBy(*group_columns).count().orderBy(F.desc("count")).limit(15).toPandas()
         )
 
 # %% [markdown]
@@ -100,7 +101,7 @@ for feature_type, item in lessons.items():
 map_frames = []
 for feature_type, item in lessons.items():
     map_frames.append(
-        item["locality"].select(
+        item["small"].select(
             F.lit(feature_type).alias("base_type"),
             F.col("subtype") if "subtype" in item["raw"].columns else F.lit(None).cast("string").alias("subtype"),
             "geometry",
@@ -115,5 +116,5 @@ mapped, axis = static_geometry_plot(
     limit=settings.map_feature_limit,
     columns=["base_type", "subtype", "geometry"],
     column="base_type",
-    title=f"Base-theme features intersecting {settings.locality_name_en}",
+    title=f"Base-theme features in configured cities: {settings.small_city_label}",
 )

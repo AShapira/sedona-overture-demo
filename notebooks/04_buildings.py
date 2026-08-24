@@ -12,12 +12,12 @@
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.spark import create_sedona
-from overture_lab.regions import resolve_focus_regions
+from overture_lab.regions import resolve_scale_regions
 from overture_lab.lesson import inspect_type
 
 settings = load_settings()
 spark = create_sedona(settings, "04-buildings")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 
 buildings = inspect_type(
     spark,
@@ -41,13 +41,13 @@ display(parts["schema"])
 # %% [markdown]
 # ## Attribute availability
 #
-# The percentages below describe only the bounded Israel teaching sample.
+# The percentages below describe only the configured medium teaching sample.
 # Missing height does not mean zero height; missing floors does not mean a
 # single-storey building.
 
 # %%
 display(
-    buildings["country"].agg(
+    buildings["medium"].agg(
         F.count("*").alias("sample_rows"),
         F.count("height").alias("with_height"),
         F.count("num_floors").alias("with_floor_count"),
@@ -61,7 +61,7 @@ display(
 
 # %%
 display(
-    buildings["country"]
+    buildings["medium"]
     .groupBy("class")
     .agg(F.count("*").alias("rows"), F.expr("percentile_approx(height, 0.5)").alias("median_height"))
     .orderBy(F.desc("rows"))
@@ -77,9 +77,9 @@ display(
 
 # %%
 part_relationships = (
-    parts["locality"].alias("p")
+    parts["small"].alias("p")
     .join(
-        buildings["locality"].select("id", "has_parts").alias("b"),
+        buildings["small"].select("id", "has_parts").alias("b"),
         F.col("p.building_id") == F.col("b.id"),
         "left",
     )
@@ -95,7 +95,7 @@ part_relationships = (
 display(part_relationships.toPandas())
 
 # %% [markdown]
-# ## Ashdod footprints
+# ## Configured small-area footprints
 #
 # Polygon rendering is capped. For citywide or national display, use the
 # aggregation and simplification patterns in notebook 09 rather than raising
@@ -105,9 +105,9 @@ display(part_relationships.toPandas())
 from overture_lab.visualize import static_geometry_plot
 
 mapped, axis = static_geometry_plot(
-    buildings["locality"],
+    buildings["small"],
     limit=settings.map_feature_limit,
     columns=["class", "height", "geometry"],
     column="class",
-    title=f"Building footprints intersecting {settings.locality_name_en}",
+    title=f"Building footprints in configured cities: {settings.small_city_label}",
 )

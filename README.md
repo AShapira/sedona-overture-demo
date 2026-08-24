@@ -31,7 +31,8 @@ sync script; Jupytext is not required in the air gap.
 
 ## Start with a local release
 
-1. Copy `.env.example` to `.env` and adjust the host data path and resources.
+1. Copy `.env.example` to `.env`, configure the required geographic scales,
+   and adjust the host data path and resources.
 2. Start the lab:
 
    ```bash
@@ -62,8 +63,8 @@ New-Item -ItemType Directory -Force C:\sedona-overture-scratch
 ```
 
 Edit `.env.windows-s3-airgap` with the real `s3a://` release root, endpoint,
-region, and credentials, then start the pinned image already imported into the
-air gap:
+region, credentials, and required geographic scales, then start the pinned
+image already imported into the air gap:
 
 ```powershell
 docker compose --env-file .env.windows-s3-airgap `
@@ -104,10 +105,14 @@ Important variables are documented in `.env.example`. In particular:
   `s3a://...` URI for an S3-compatible store.
 - `SEDONA_SPARK_LOCAL_CORES`, `SEDONA_SPARK_DRIVER_MEMORY`, and
   `SEDONA_SPARK_PARTITIONS` control the local Spark session.
-- `ISRAEL_SAMPLE_LIMIT`, `ASHDOD_SAMPLE_LIMIT`, and `MAP_FEATURE_LIMIT`
+- `MEDIUM_STATE_CODES` is a required JSON string array. Its values match the
+  Overture `country` field; for example, `["IL","XW","XG"]`.
+- `SMALL_CITIES` is a required JSON array whose objects contain `name` and
+  `state_code`, for example
+  `[{"name":"City A","state_code":"AA"}]`. Names match English common names
+  exactly, and each code must also appear in `MEDIUM_STATE_CODES`.
+- `MEDIUM_SAMPLE_LIMIT`, `SMALL_SAMPLE_LIMIT`, and `MAP_FEATURE_LIMIT`
   separate medium, small, and browser-safe data sizes.
-- `FOCUS_COUNTRY_CODE`, `FOCUS_LOCALITY_EN`, and `FOCUS_LOCALITY_COUNTRY_CODE`
-  make the geographic focus explicit.
 - `SEDONA_SCRATCH_BUDGET_GB` and `SEDONA_SCRATCH_RESERVE_GB` guard the
   namespaced scratch tree before work begins. Docker bind mounts do not expose
   a portable hard per-directory quota, so the lab never claims this is a
@@ -130,9 +135,10 @@ read-back row count, so no previous derivative is overwritten.
 ## Deliberate scale levels
 
 - **Raw:** the complete immutable Overture release.
-- **Medium:** a bounded Israel sample, capped by `ISRAEL_SAMPLE_LIMIT`.
-- **Small:** an exact Ashdod-boundary sample, capped by
-  `ASHDOD_SAMPLE_LIMIT`.
+- **Medium:** the combined configured state-code areas, capped globally by
+  `MEDIUM_SAMPLE_LIMIT`.
+- **Small:** the exact configured city boundaries, capped globally by
+  `SMALL_SAMPLE_LIMIT`.
 - **Map:** a further capped projection with only map-relevant columns.
 
 `limit()` makes a bounded teaching sample; it is not a statistically
@@ -156,6 +162,17 @@ Run fast structural tests:
 python3 -m unittest discover -s tests -v
 ```
 
+Check multi-boundary bbox pruning and exact-hit deduplication in the pinned
+Sedona runtime:
+
+```bash
+podman run --rm --security-opt=no-new-privileges --memory=8g \
+  -e PYTHONPATH=/workspace/src:/opt/spark/python \
+  -v "$PWD:/workspace:ro" -w /workspace --entrypoint python3 \
+  docker.io/apache/sedona:1.9.0@sha256:a1acf172621652c926214259045b2324f75341026dd726db0bef7e21b4205525 \
+  tests/check_regions_spark.py
+```
+
 Render only the Windows Compose image reference without printing the
 credential-bearing environment:
 
@@ -164,7 +181,8 @@ docker compose --env-file .env.windows-s3-airgap `
   -f compose.windows-s3-airgap.yml config --images
 ```
 
-Run a real Ashdod smoke execution in the already-present air-gap image:
+Run a real configured-scale smoke execution in the already-present air-gap
+image after exporting the four required scale variables:
 
 ```bash
 scripts/smoke-notebooks.sh notebooks/00_environment_and_release.ipynb \

@@ -90,6 +90,11 @@ fi
   -e OVERTURE_RELEASE_URI=s3a://overture/release/2026-07-22.0 \
   -e OVERTURE_RELEASE=2026-07-22.0 \
   -e REQUIRE_S3_RELEASE=true \
+  -e MEDIUM_STATE_CODES='["AA"]' \
+  -e SMALL_CITIES='[{"name":"Fixture City","state_code":"AA"}]' \
+  -e MEDIUM_SAMPLE_LIMIT=20 \
+  -e SMALL_SAMPLE_LIMIT=10 \
+  -e MAP_FEATURE_LIMIT=5 \
   -e S3_ENDPOINT=http://minio:9000 \
   -e S3_REGION=us-east-1 \
   -e S3_ACCESS_KEY=minioadmin \
@@ -117,6 +122,11 @@ fi
   --memory=8g \
   -e PYTHONPATH=/workspace/src:/opt/spark/python \
   -e OVERTURE_RELEASE_URI=s3a://overture/release/2026-07-22.0 \
+  -e MEDIUM_STATE_CODES='["AA"]' \
+  -e SMALL_CITIES='[{"name":"Fixture City","state_code":"AA"}]' \
+  -e MEDIUM_SAMPLE_LIMIT=20 \
+  -e SMALL_SAMPLE_LIMIT=10 \
+  -e MAP_FEATURE_LIMIT=5 \
   -e S3_ENDPOINT=http://minio:9000 \
   -e S3_REGION=us-east-1 \
   -e S3_ACCESS_KEY=minioadmin \
@@ -141,6 +151,11 @@ fi
   --memory=8g \
   -e PYTHONPATH=/workspace/src:/opt/spark/python \
   -e OVERTURE_RELEASE_URI=s3a://overture/release/2026-07-22.0 \
+  -e MEDIUM_STATE_CODES='["AA"]' \
+  -e SMALL_CITIES='[{"name":"Fixture City","state_code":"AA"}]' \
+  -e MEDIUM_SAMPLE_LIMIT=20 \
+  -e SMALL_SAMPLE_LIMIT=10 \
+  -e MAP_FEATURE_LIMIT=5 \
   -e S3_ENDPOINT=http://minio:9000 \
   -e S3_REGION=us-east-1 \
   -e S3_ACCESS_KEY=readonly \

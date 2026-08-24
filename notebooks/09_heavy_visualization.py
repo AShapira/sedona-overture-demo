@@ -17,16 +17,16 @@
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.spark import create_sedona, read_type
-from overture_lab.regions import resolve_focus_regions, bbox_overlap, exact_intersection
+from overture_lab.regions import resolve_scale_regions, bbox_overlap, exact_intersection
 
 settings = load_settings()
 spark = create_sedona(settings, "09-heavy-visualization")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 
 raw = read_type(spark, settings, "buildings", "building")
-candidates = bbox_overlap(raw, regions.locality_bounds)
-ashdod = exact_intersection(candidates, regions.locality).limit(
-    settings.locality_sample_limit
+candidates = bbox_overlap(raw, regions.small_bounds)
+small_buildings = exact_intersection(candidates, regions.small).limit(
+    settings.small_sample_limit
 )
 
 # %% [markdown]
@@ -38,9 +38,9 @@ ashdod = exact_intersection(candidates, regions.locality).limit(
 # %%
 {
     "raw_input": settings.type_uri("buildings", "building"),
-    "locality_sample_cap": settings.locality_sample_limit,
+    "small_sample_cap": settings.small_sample_limit,
     "map_feature_cap": settings.map_feature_limit,
-    "locality_bbox": regions.locality_bounds.as_dict(),
+    "small_bboxes": [item.as_dict() for item in regions.small_bounds],
 }
 
 # %% [markdown]
@@ -50,14 +50,14 @@ ashdod = exact_intersection(candidates, regions.locality).limit(
 
 # %%
 class_counts = (
-    ashdod.groupBy(F.coalesce("class", F.lit("<missing>")).alias("class"))
+    small_buildings.groupBy(F.coalesce("class", F.lit("<missing>")).alias("class"))
     .count()
     .orderBy(F.desc("count"))
 )
 class_pdf = class_counts.toPandas()
 display(class_pdf)
 class_pdf.head(20).sort_values("count").plot.barh(
-    x="class", y="count", figsize=(9, 6), legend=False, title="Building classes in bounded Ashdod sample"
+    x="class", y="count", figsize=(9, 6), legend=False, title="Building classes in configured small sample"
 )
 
 # %% [markdown]
@@ -71,7 +71,7 @@ class_pdf.head(20).sort_values("count").plot.barh(
 # %%
 CELL_DEGREES = 0.005
 gridded = (
-    ashdod.select(
+    small_buildings.select(
         F.floor(((F.col("bbox.xmin") + F.col("bbox.xmax")) / 2) / CELL_DEGREES).alias("cell_x"),
         F.floor(((F.col("bbox.ymin") + F.col("bbox.ymax")) / 2) / CELL_DEGREES).alias("cell_y"),
     )
@@ -94,7 +94,7 @@ display(gridded.orderBy(F.desc("count")).limit(20).toPandas())
 # geometry for analysis and write a separate visual derivative.
 
 # %%
-simplified = ashdod.select(
+simplified = small_buildings.select(
     "id",
     "class",
     F.expr("ST_SimplifyPreserveTopology(geometry, 0.00005)").alias("geometry"),
@@ -114,7 +114,7 @@ grid_map, grid_axis = static_geometry_plot(
     limit=settings.map_feature_limit,
     columns=["count", "geometry"],
     column="count",
-    title=f"Building density cells in {settings.locality_name_en}",
+    title=f"Building density in configured cities: {settings.small_city_label}",
 )
 
 footprint_map, footprint_axis = static_geometry_plot(
@@ -122,7 +122,7 @@ footprint_map, footprint_axis = static_geometry_plot(
     limit=settings.map_feature_limit,
     columns=["class", "geometry"],
     column="class",
-    title=f"Simplified building inspection sample in {settings.locality_name_en}",
+    title=f"Simplified building sample: {settings.small_city_label}",
 )
 
 # %% [markdown]

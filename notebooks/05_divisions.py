@@ -17,12 +17,12 @@
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.spark import create_sedona, read_type
-from overture_lab.regions import resolve_focus_regions, bbox_overlap, exact_intersection
+from overture_lab.regions import resolve_scale_regions, bbox_overlap, exact_intersection
 from overture_lab.catalog import schema_table
 
 settings = load_settings()
 spark = create_sedona(settings, "05-divisions")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 
 division = read_type(spark, settings, "divisions", "division")
 area = read_type(spark, settings, "divisions", "division_area")
@@ -32,15 +32,15 @@ display(schema_table(area))
 display(schema_table(boundary))
 
 # %% [markdown]
-# ## Data-driven focus resolution
+# ## Data-driven scale resolution
 #
-# The code finds the unique IL locality whose English common name is Ashdod,
-# then resolves its exact `division_area`. This avoids a hand-drawn rectangle
-# and makes the chosen source semantics inspectable.
+# The code resolves every configured city by exact English common name and
+# state code, then loads its authoritative land `division_area`. This avoids
+# hand-drawn rectangles and makes the chosen source semantics inspectable.
 
 # %%
 display(
-    regions.locality.select(
+    regions.small.select(
         "id",
         "division_id",
         F.col("names.primary").alias("primary_name"),
@@ -50,18 +50,18 @@ display(
     ).toPandas()
 )
 {
-    "country_bounds": regions.country_bounds.as_dict(),
-    "locality_bounds": regions.locality_bounds.as_dict(),
-    "verified_locality_division_id": regions.locality_division_id,
+    "medium_bounds": [item.as_dict() for item in regions.medium_bounds],
+    "small_bounds": [item.as_dict() for item in regions.small_bounds],
+    "small_division_ids": regions.small_division_ids,
 }
 
 # %% [markdown]
 # ## Entity, area, and hierarchy
 
 # %%
-ashdod_entity = division.where(F.col("id") == regions.locality_division_id)
+small_entities = division.where(F.col("id").isin(*regions.small_division_ids))
 display(
-    ashdod_entity.select(
+    small_entities.select(
         "id",
         "country",
         "subtype",
@@ -77,17 +77,17 @@ display(
 )
 
 # %% [markdown]
-# ## Boundaries intersecting Ashdod
+# ## Boundaries intersecting configured small areas
 #
 # Bbox overlap prunes row groups; `ST_Intersects` supplies exact geometry
 # semantics. Boundary rows can reference more than one division.
 
 # %%
-ashdod_boundaries = exact_intersection(
-    bbox_overlap(boundary, regions.locality_bounds), regions.locality
-).limit(settings.locality_sample_limit)
+small_boundaries = exact_intersection(
+    bbox_overlap(boundary, regions.small_bounds), regions.small
+).limit(settings.small_sample_limit)
 display(
-    ashdod_boundaries.select(
+    small_boundaries.select(
         "id",
         "division_ids",
         "subtype",
@@ -109,8 +109,8 @@ display(
 from overture_lab.visualize import static_geometry_plot
 
 mapped, axis = static_geometry_plot(
-    regions.locality,
-    limit=10,
+    regions.small,
+    limit=settings.map_feature_limit,
     columns=["division_id", "geometry"],
-    title=f"Resolved Overture division area for {settings.locality_name_en}",
+    title=f"Configured small division areas: {settings.small_city_label}",
 )

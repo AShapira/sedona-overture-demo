@@ -10,6 +10,11 @@ param(
 $ErrorActionPreference = "Stop"
 $composeArgs = @("compose", "--env-file", $EnvFile, "-f", $ComposeFile)
 
+& docker @composeArgs config --quiet
+if ($LASTEXITCODE -ne 0) {
+    throw "Compose validation failed. Set all required scale and S3 variables."
+}
+
 & docker @composeArgs up -d
 if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose failed to start the S3-only lab."

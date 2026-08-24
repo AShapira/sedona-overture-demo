@@ -11,12 +11,12 @@
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.spark import create_sedona
-from overture_lab.regions import resolve_focus_regions
+from overture_lab.regions import resolve_scale_regions
 from overture_lab.lesson import inspect_type
 
 settings = load_settings()
 spark = create_sedona(settings, "07-transportation")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 
 segments = inspect_type(
     spark,
@@ -42,7 +42,7 @@ display(connectors["schema"])
 
 # %%
 display(
-    segments["country"]
+    segments["medium"]
     .groupBy("subtype", "class", "subclass")
     .count()
     .orderBy(F.desc("count"))
@@ -59,7 +59,7 @@ display(
 
 # %%
 display(
-    segments["locality"].select(
+    segments["small"].select(
         "id",
         "class",
         F.explode_outer("road_surface").alias("surface_rule"),
@@ -79,7 +79,7 @@ display(
 # changes.
 
 # %%
-segment_connectors = segments["locality"].select(
+segment_connectors = segments["small"].select(
     "id",
     F.posexplode_outer("connectors").alias("connector_order", "connector"),
 ).select(
@@ -99,7 +99,7 @@ display(segment_connectors.limit(30).toPandas())
 # %%
 display(
     segment_connectors.alias("sc")
-    .join(connectors["locality"].select("id").alias("c"), F.col("sc.connector_id") == F.col("c.id"), "left")
+    .join(connectors["small"].select("id").alias("c"), F.col("sc.connector_id") == F.col("c.id"), "left")
     .select("segment_id", "connector_order", "connector_id", "at", F.col("c.id").isNotNull().alias("connector_in_sample"))
     .limit(30)
     .toPandas()
@@ -112,9 +112,9 @@ display(
 from overture_lab.visualize import static_geometry_plot
 
 mapped, axis = static_geometry_plot(
-    segments["locality"],
+    segments["small"],
     limit=settings.map_feature_limit,
     columns=["class", "subtype", "geometry"],
     column="class",
-    title=f"Transportation segments intersecting {settings.locality_name_en}",
+    title=f"Transportation in configured cities: {settings.small_city_label}",
 )

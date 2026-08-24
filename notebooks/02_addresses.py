@@ -13,12 +13,12 @@
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.spark import create_sedona
-from overture_lab.regions import resolve_focus_regions
+from overture_lab.regions import resolve_scale_regions
 from overture_lab.lesson import inspect_type
 
 settings = load_settings()
 spark = create_sedona(settings, "02-addresses")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 lesson = inspect_type(
     spark,
     settings,
@@ -37,7 +37,7 @@ display(lesson["schema"])
 # levels.
 
 # %%
-lesson["locality"].createOrReplaceTempView("ashdod_addresses")
+lesson["small"].createOrReplaceTempView("small_addresses")
 display(
     spark.sql(
         """
@@ -46,7 +46,7 @@ display(
                size(sources) AS source_items,
                ST_X(geometry) AS longitude,
                ST_Y(geometry) AS latitude
-        FROM ashdod_addresses
+        FROM small_addresses
         LIMIT 25
         """
     ).toPandas()
@@ -55,11 +55,11 @@ display(
 # %% [markdown]
 # ## Completeness is measured per field
 #
-# This is a profile of the configured bounded Israel sample, not a global or
+# This is a profile of the configured medium sample, not a global or
 # statistically representative quality score.
 
 # %%
-profile = lesson["country"].agg(
+profile = lesson["medium"].agg(
     F.count("*").alias("sample_rows"),
     F.count("street").alias("with_street"),
     F.count("number").alias("with_number"),
@@ -74,7 +74,7 @@ display(profile.toPandas())
 
 # %%
 display(
-    lesson["country"]
+    lesson["medium"]
     .select(F.explode_outer("sources").alias("source"))
     .groupBy("source.dataset")
     .count()
@@ -85,16 +85,16 @@ display(
 # %% [markdown]
 # ## Address point map
 #
-# Points are collected only after exact intersection with the Ashdod area and
-# an explicit map cap.
+# Points are collected only after exact intersection with the configured
+# small areas and an explicit map cap.
 
 # %%
 from overture_lab.visualize import static_geometry_plot
 
 mapped, axis = static_geometry_plot(
-    lesson["locality"],
+    lesson["small"],
     limit=settings.map_feature_limit,
     columns=["postcode", "geometry"],
     column="postcode",
-    title=f"Address points in {settings.locality_name_en}",
+    title=f"Address points in configured cities: {settings.small_city_label}",
 )

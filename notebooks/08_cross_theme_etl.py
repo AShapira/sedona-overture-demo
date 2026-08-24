@@ -2,12 +2,12 @@
 # # 08 — Cross-theme ETL: places associated with building footprints
 #
 # **Execution engine:** SedonaSpark.
-# **Inputs:** `places/place`, `buildings/building`, and the Ashdod
-# `divisions/division_area`.
+# **Inputs:** `places/place`, `buildings/building`, and configured small
+# `divisions/division_area` rows.
 # **Output model:** one row per place/building spatial association.
 #
 # This lesson separates a reusable ETL pipeline from presentation. It projects
-# only required fields, applies bbox pruning and exact locality filtering, then
+# only required fields, applies bbox pruning and exact small-area filtering, then
 # performs a spatial join. A place can match zero, one, or multiple footprints;
 # the relationship is derived and must not be presented as an Overture source
 # identifier.
@@ -17,11 +17,11 @@ from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.outputs import write_derived
 from overture_lab.spark import create_sedona, read_type
-from overture_lab.regions import resolve_focus_regions, bounded_sample
+from overture_lab.regions import resolve_scale_regions, bounded_sample
 
 settings = load_settings()
 spark = create_sedona(settings, "08-cross-theme-etl")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 
 # %% [markdown]
 # ## Read, project, and bound each input
@@ -39,15 +39,15 @@ buildings_raw = read_type(spark, settings, "buildings", "building").select(
 
 places = bounded_sample(
     places_raw,
-    regions.locality,
-    regions.locality_bounds,
-    settings.locality_sample_limit,
+    regions.small,
+    regions.small_bounds,
+    settings.small_sample_limit,
 ).alias("p")
 buildings = bounded_sample(
     buildings_raw,
-    regions.locality,
-    regions.locality_bounds,
-    settings.locality_sample_limit,
+    regions.small,
+    regions.small_bounds,
+    settings.small_sample_limit,
 ).alias("b")
 
 # %% [markdown]
@@ -116,6 +116,6 @@ write_result = write_derived(
     associated,
     spark,
     settings,
-    dataset_name="ashdod_place_building",
+    dataset_name="small_place_building",
 )
 write_result.as_dict()

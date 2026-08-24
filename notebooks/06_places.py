@@ -13,12 +13,12 @@
 from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.spark import create_sedona
-from overture_lab.regions import resolve_focus_regions
+from overture_lab.regions import resolve_scale_regions
 from overture_lab.lesson import inspect_type
 
 settings = load_settings()
 spark = create_sedona(settings, "06-places")
-regions = resolve_focus_regions(spark, settings)
+regions = resolve_scale_regions(spark, settings)
 places = inspect_type(
     spark,
     settings,
@@ -38,7 +38,7 @@ display(places["schema"])
 
 # %%
 display(
-    places["country"]
+    places["medium"]
     .groupBy("basic_category", "categories.primary")
     .count()
     .orderBy(F.desc("count"))
@@ -51,7 +51,7 @@ display(
 
 # %%
 display(
-    places["locality"].select(
+    places["small"].select(
         "id",
         F.col("names.primary").alias("primary_name"),
         F.element_at("names.common", F.lit("en")).alias("english_name"),
@@ -73,7 +73,7 @@ display(
 
 # %%
 display(
-    places["country"].select(
+    places["medium"].select(
         F.when(F.col("confidence").isNull(), "missing")
         .when(F.col("confidence") < 0.5, "below_0.5")
         .when(F.col("confidence") < 0.8, "0.5_to_0.8")
@@ -89,17 +89,17 @@ display(
 from overture_lab.visualize import static_geometry_plot, interactive_geometry_map
 
 mapped, axis = static_geometry_plot(
-    places["locality"],
+    places["small"],
     limit=settings.map_feature_limit,
     columns=["basic_category", "confidence", "geometry"],
     column="basic_category",
-    title=f"Places in {settings.locality_name_en} by broad category",
+    title=f"Places in configured cities by category: {settings.small_city_label}",
 )
 
 # The interactive deck has no network basemap. VS Code renders the layer from
 # the bounded local data only.
 interactive_geometry_map(
-    places["locality"],
+    places["small"],
     limit=min(settings.map_feature_limit, 500),
     columns=["basic_category", "confidence", "geometry"],
 )

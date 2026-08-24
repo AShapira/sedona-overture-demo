@@ -3,13 +3,31 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import json
 import os
 from pathlib import Path
+import re
 from urllib.parse import urlparse
+
+
+STATE_CODE = re.compile(r"^[A-Z]{2}$")
 
 
 def _positive_int(name: str, default: int) -> int:
     raw = os.getenv(name, str(default))
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{name} must be an integer, found {raw!r}") from exc
+    if value < 1:
+        raise ValueError(f"{name} must be at least 1, found {value}")
+    return value
+
+
+def _required_positive_int(name: str) -> int:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        raise ValueError(f"{name} is required")
     try:
         value = int(raw)
     except ValueError as exc:
@@ -39,6 +57,70 @@ def _boolean(name: str, default: bool) -> bool:
     raise ValueError(f"{name} must be true or false, found {raw!r}")
 
 
+def _required_json(name: str) -> object:
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        raise ValueError(f"{name} is required")
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{name} must contain valid JSON") from exc
+
+
+def _state_code(value: object, source: str) -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{source} must be a string")
+    code = value.strip().upper()
+    if not STATE_CODE.fullmatch(code):
+        raise ValueError(f"{source} must be a two-letter state code")
+    return code
+
+
+def _medium_state_codes() -> tuple[str, ...]:
+    value = _required_json("MEDIUM_STATE_CODES")
+    if not isinstance(value, list) or not value:
+        raise ValueError("MEDIUM_STATE_CODES must be a non-empty JSON array")
+    codes = tuple(
+        _state_code(item, f"MEDIUM_STATE_CODES[{index}]")
+        for index, item in enumerate(value)
+    )
+    if len(set(codes)) != len(codes):
+        raise ValueError("MEDIUM_STATE_CODES must not contain duplicates")
+    return codes
+
+
+@dataclass(frozen=True)
+class CitySpec:
+    name: str
+    state_code: str
+
+
+def _small_cities(medium_state_codes: tuple[str, ...]) -> tuple[CitySpec, ...]:
+    value = _required_json("SMALL_CITIES")
+    if not isinstance(value, list) or not value:
+        raise ValueError("SMALL_CITIES must be a non-empty JSON array")
+    cities = []
+    for index, item in enumerate(value):
+        source = f"SMALL_CITIES[{index}]"
+        if not isinstance(item, dict) or set(item) != {"name", "state_code"}:
+            raise ValueError(
+                f"{source} must contain exactly name and state_code"
+            )
+        name = item["name"]
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"{source}.name must be a non-empty string")
+        code = _state_code(item["state_code"], f"{source}.state_code")
+        if code not in medium_state_codes:
+            raise ValueError(
+                f"{source}.state_code must also appear in MEDIUM_STATE_CODES"
+            )
+        cities.append(CitySpec(name=name.strip(), state_code=code))
+    city_keys = {(city.name, city.state_code) for city in cities}
+    if len(city_keys) != len(cities):
+        raise ValueError("SMALL_CITIES must not contain duplicate city entries")
+    return tuple(cities)
+
+
 @dataclass(frozen=True)
 class LabSettings:
     release_uri: str
@@ -47,11 +129,10 @@ class LabSettings:
     driver_memory: str
     shuffle_partitions: int
     spark_local_dir: str
-    country_code: str
-    locality_name_en: str
-    locality_country_code: str
-    country_sample_limit: int
-    locality_sample_limit: int
+    medium_state_codes: tuple[str, ...]
+    small_cities: tuple[CitySpec, ...]
+    medium_sample_limit: int
+    small_sample_limit: int
     map_feature_limit: int
     s3_endpoint: str | None
     s3_region: str | None
@@ -86,6 +167,16 @@ class LabSettings:
     @property
     def storage_mode(self) -> str:
         return "s3a" if self.release_uri.startswith("s3a://") else "local"
+
+    @property
+    def medium_state_label(self) -> str:
+        return ", ".join(self.medium_state_codes)
+
+    @property
+    def small_city_label(self) -> str:
+        return ", ".join(
+            f"{city.name} ({city.state_code})" for city in self.small_cities
+        )
 
     def prepare_process_environment(self) -> None:
         """Set Spark-launch variables before importing PySpark."""
@@ -130,6 +221,9 @@ def load_settings() -> LabSettings:
     if bool(access_key) != bool(secret_key):
         raise ValueError("S3_ACCESS_KEY and S3_SECRET_KEY must be set together")
 
+    medium_state_codes = _medium_state_codes()
+    small_cities = _small_cities(medium_state_codes)
+
     settings = LabSettings(
         release_uri=os.getenv("OVERTURE_RELEASE_URI", "/data/overture"),
         release=os.getenv("OVERTURE_RELEASE", "2026-07-22.0"),
@@ -137,13 +231,10 @@ def load_settings() -> LabSettings:
         driver_memory=os.getenv("SEDONA_SPARK_DRIVER_MEMORY", "16g"),
         shuffle_partitions=partitions,
         spark_local_dir=os.getenv("SEDONA_SPARK_LOCAL_DIR", "/var/tmp/spark"),
-        country_code=os.getenv("FOCUS_COUNTRY_CODE", "IL"),
-        locality_name_en=os.getenv("FOCUS_LOCALITY_EN", "Ashdod"),
-        locality_country_code=os.getenv(
-            "FOCUS_LOCALITY_COUNTRY_CODE", "IL"
-        ),
-        country_sample_limit=_positive_int("ISRAEL_SAMPLE_LIMIT", 50_000),
-        locality_sample_limit=_positive_int("ASHDOD_SAMPLE_LIMIT", 10_000),
+        medium_state_codes=medium_state_codes,
+        small_cities=small_cities,
+        medium_sample_limit=_required_positive_int("MEDIUM_SAMPLE_LIMIT"),
+        small_sample_limit=_required_positive_int("SMALL_SAMPLE_LIMIT"),
         map_feature_limit=_positive_int("MAP_FEATURE_LIMIT", 2_000),
         s3_endpoint=endpoint,
         s3_region=os.getenv("S3_REGION") or None,
@@ -173,9 +264,13 @@ def load_settings() -> LabSettings:
             "DERIVED_LOCAL_FALLBACK_DIR", "/var/tmp/derived"
         ),
     )
-    if settings.map_feature_limit > settings.locality_sample_limit:
+    if settings.small_sample_limit > settings.medium_sample_limit:
         raise ValueError(
-            "MAP_FEATURE_LIMIT must not exceed ASHDOD_SAMPLE_LIMIT"
+            "SMALL_SAMPLE_LIMIT must not exceed MEDIUM_SAMPLE_LIMIT"
+        )
+    if settings.map_feature_limit > settings.small_sample_limit:
+        raise ValueError(
+            "MAP_FEATURE_LIMIT must not exceed SMALL_SAMPLE_LIMIT"
         )
     if settings.scratch_reserve_gb >= settings.scratch_budget_gb:
         raise ValueError(
