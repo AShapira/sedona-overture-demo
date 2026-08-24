@@ -15,7 +15,12 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from overture_lab.config import CitySpec, load_settings  # noqa: E402
 from overture_lab.catalog import aggregate_s3_objects  # noqa: E402
-from overture_lab.outputs import is_permission_error  # noqa: E402
+from overture_lab.outputs import (  # noqa: E402
+    SINGLE_FILE_CSV_COLUMNS,
+    _single_file_run_prefix,
+    is_permission_error,
+    write_single_file_exports,
+)
 from overture_lab.regions import (  # noqa: E402
     Bounds,
     _bounds_from_values,
@@ -187,6 +192,90 @@ class ConfigurationTests(unittest.TestCase):
         self.assertTrue(is_permission_error(RuntimeError("AccessDenied: 403")))
         self.assertFalse(is_permission_error(RuntimeError("connection timed out")))
 
+    def test_single_file_export_dry_run_has_no_destination(self):
+        dataframe = type(
+            "RoadFrame",
+            (),
+            {
+                "columns": [
+                    "road_id",
+                    "source_segment_id",
+                    "road_class",
+                    "geometry",
+                ]
+            },
+        )()
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+        result = write_single_file_exports(
+            dataframe, None, settings, dataset_name="clipped_roads"
+        )
+        self.assertEqual(result.status, "dry-run")
+        self.assertIsNone(result.run_prefix)
+        self.assertIsNone(result.row_count)
+
+    def test_single_file_export_requires_s3_destination_when_enabled(self):
+        dataframe = type(
+            "RoadFrame",
+            (),
+            {
+                "columns": [
+                    "road_id",
+                    "source_segment_id",
+                    "road_class",
+                    "geometry",
+                ]
+            },
+        )()
+        with patch.dict(
+            os.environ,
+            test_environment(WRITE_DERIVED="true"),
+            clear=True,
+        ):
+            settings = load_settings()
+        with self.assertRaisesRegex(ValueError, "require DERIVED_OUTPUT_URI"):
+            write_single_file_exports(
+                dataframe, None, settings, dataset_name="clipped_roads"
+            )
+
+    def test_single_file_paths_and_csv_schema_are_stable(self):
+        with patch.dict(
+            os.environ,
+            test_environment(
+                DERIVED_OUTPUT_URI="s3a://maps/derived/sedona-lab"
+            ),
+            clear=True,
+        ):
+            settings = load_settings()
+        prefix = _single_file_run_prefix(
+            settings,
+            "Clipped roads",
+            run_id="fixed-run",
+        )
+        self.assertEqual(
+            prefix,
+            "s3a://maps/derived/sedona-lab/Clipped-roads/"
+            "release=2026-07-22.0/run=fixed-run",
+        )
+        self.assertEqual(
+            SINGLE_FILE_CSV_COLUMNS,
+            (
+                "road_id",
+                "source_segment_id",
+                "road_class",
+                "geometry_wkt",
+            ),
+        )
+
+    def test_single_file_export_rejects_missing_columns(self):
+        dataframe = type("RoadFrame", (), {"columns": ["road_id"]})()
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+        with self.assertRaisesRegex(ValueError, "missing columns"):
+            write_single_file_exports(
+                dataframe, None, settings, dataset_name="clipped_roads"
+            )
+
     def test_s3_inventory_aggregates_only_hive_parquet_leaves(self):
         totals = aggregate_s3_objects(
             [
@@ -243,7 +332,7 @@ class ConfigurationTests(unittest.TestCase):
 
 class NotebookTests(unittest.TestCase):
     def test_expected_curriculum_exists_and_is_valid_json(self):
-        expected = [f"{number:02d}" for number in range(10)]
+        expected = [f"{number:02d}" for number in range(11)]
         found = sorted(path.name[:2] for path in (ROOT / "notebooks").glob("*.ipynb"))
         self.assertEqual(found, expected)
         for path in (ROOT / "notebooks").glob("*.ipynb"):

@@ -2,8 +2,8 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same ten lessons support a read-only filesystem release or
-an S3A-only release served to Docker Desktop on a Windows host.
+Apache Sedona. The same eleven lessons support a read-only filesystem release
+or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
 do not assume that all of it fits in memory: they read one Hive-partitioned
@@ -24,6 +24,7 @@ only collect explicitly bounded results for tables or maps.
 | `07_transportation` | Segments, connectors, linear referencing and topology |
 | `08_cross_theme_etl` | Reusable spatial ETL and cross-theme derivation |
 | `09_heavy_visualization` | Safe collection, aggregation, simplification and maps |
+| `10_standalone_sedonaspark_clipped_roads` | Regional road clipping, named S3 exports, large maps |
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included
@@ -131,6 +132,16 @@ denial may fall back to `/scratch/derived`; cleanup failures or a data write
 that has already started stop immediately and report the partial S3 prefix.
 Every successful run uses a new directory and is verified by `_SUCCESS` and a
 read-back row count, so no previous derivative is overwritten.
+
+Notebook 10 is likewise read-only unless `WRITE_DERIVED=true`, but its output
+contract is intentionally different: `DERIVED_OUTPUT_URI` is mandatory and
+local fallback is never used. Each successful unique run prefix contains
+exactly `roads.geoparquet` and `roads.csv`. Spark writes each format through a
+temporary one-part directory, promotes the part to the stable object name,
+removes Spark metadata, and validates both objects by reading them back. The
+CSV stores geometry as quoted WKT. This serial finalisation is slower than
+normal parallel Spark output and should be used only when downstream consumers
+require one object per format.
 
 ## Deliberate scale levels
 

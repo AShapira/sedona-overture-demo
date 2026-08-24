@@ -34,7 +34,10 @@ def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
         .config("spark.ui.showConsoleProgress", "false")
     )
 
-    if settings.release_uri.startswith("s3a://"):
+    uses_s3 = settings.release_uri.startswith("s3a://") or bool(
+        settings.derived_output_uri
+    )
+    if uses_s3:
         if settings.s3_endpoint:
             builder = builder.config(
                 "spark.hadoop.fs.s3a.endpoint", settings.s3_endpoint
