@@ -25,7 +25,7 @@ only collect explicitly bounded results for tables or maps.
 | `08_cross_theme_etl` | Reusable spatial ETL and cross-theme derivation |
 | `09_heavy_visualization` | Safe collection, aggregation, simplification and maps |
 | `10_standalone_sedonaspark_clipped_roads` | Regional road clipping, named S3 exports, large maps |
-| `11_world_airports_and_medium_runways` | Worldwide airport Places, regional runways, named GeoParquet exports and maps |
+| `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included
@@ -148,15 +148,17 @@ The CSV alone adds the export identifiers and is deliberately limited to
 This serial finalisation is slower than normal parallel Spark output and should
 be used only when downstream consumers require one object per format.
 
-Notebook 11 selects every worldwide Place whose `basic_category` is `airport`
-and retains the complete source row for downstream refinement. It also selects
-complete infrastructure runway geometries (`subtype=airport`, `class=runway`)
-that intersect the configured medium-state land areas, using bbox pruning
-before the exact spatial predicate. Each enabled export has its own unique run
-prefix containing exactly one named GeoParquet object: `airports.geoparquet`
-or `runways.geoparquet`. Both use GeoParquet 1.1 bbox covering metadata and the
-same mandatory-S3, no-local-fallback safety policy as notebook 10. Runway maps
-are offline and browser collection is capped by `MAP_FEATURE_LIMIT`.
+Notebook 11 selects worldwide airport-scale Infrastructure features by an
+explicit allowlist of complete-airport classes, excluding related components
+such as terminals, runways, taxiways, aprons, gates, heliports, and airstrips.
+It retains the complete Infrastructure row and separately selects complete
+runway geometries (`subtype=airport`, `class=runway`) that intersect the
+configured medium-state land areas, using bbox pruning before the exact spatial
+predicate. Each enabled export has its own unique run prefix containing exactly
+one named GeoParquet object: `airports.geoparquet` or `runways.geoparquet`.
+Both use GeoParquet 1.1 bbox covering metadata and the same mandatory-S3,
+no-local-fallback safety policy as notebook 10. Runway maps are offline and
+browser collection is capped by `MAP_FEATURE_LIMIT`.
 
 ## Deliberate scale levels
 

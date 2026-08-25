@@ -334,8 +334,36 @@ def main() -> int:
     ]
     outside_runway = [(36.0, 32.2), (36.5, 32.2)]
     taxiway = [(34.3, 32.6), (34.7, 32.6)]
+    canonical_airport_one = [
+        (34.45, 32.40),
+        (34.65, 32.40),
+        (34.65, 32.50),
+        (34.45, 32.50),
+        (34.45, 32.40),
+    ]
+    canonical_airport_two = [
+        (-73.82, 40.62),
+        (-73.74, 40.62),
+        (-73.74, 40.68),
+        (-73.82, 40.68),
+        (-73.82, 40.62),
+    ]
     infrastructure_rows = []
     for feature_id, feature_class, surface, points, geometry in (
+        (
+            "canonical-airport-one",
+            "international_airport",
+            None,
+            canonical_airport_one,
+            polygon_wkb(canonical_airport_one),
+        ),
+        (
+            "canonical-airport-two",
+            "regional_airport",
+            None,
+            canonical_airport_two,
+            polygon_wkb(canonical_airport_two),
+        ),
         (
             "inside-runway",
             "runway",

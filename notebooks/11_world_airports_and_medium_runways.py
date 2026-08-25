@@ -2,16 +2,16 @@
 # # 11 — Worldwide airports and configured-region runways
 #
 # **Execution engine:** SedonaSpark.
-# **Inputs:** raw `places/place`, `base/infrastructure`, and
-# `divisions/division_area` GeoParquet from the configured Overture release.
-# **Outputs:** one named GeoParquet object for all worldwide airport Places and
+# **Inputs:** raw `base/infrastructure` and `divisions/division_area`
+# GeoParquet from the configured Overture release.
+# **Outputs:** one named GeoParquet object for all worldwide airport-scale
+# infrastructure features and
 # one named GeoParquet object for complete runway geometries intersecting the
 # land-country areas in `MEDIUM_STATE_CODES`, when writing is enabled.
 #
-# The worldwide airport predicate is deliberately transparent:
-# `basic_category = 'airport'`. Every source Places column is retained, so
-# downstream users can apply narrower category, confidence, status, brand,
-# address, or provenance rules without repeating the global scan.
+# The worldwide airport predicate selects airport-scale infrastructure classes
+# and deliberately excludes related components such as terminals, runways,
+# taxiways, aprons, gates, heliports, and airstrips.
 
 # %%
 import math
@@ -28,6 +28,15 @@ from overture_lab.spark import create_sedona, read_type
 settings = load_settings()
 spark = create_sedona(settings, "11-world-airports-and-medium-runways")
 metrics: list[dict[str, int | float | str]] = []
+AIRPORT_CLASSES = (
+    "airport",
+    "international_airport",
+    "regional_airport",
+    "municipal_airport",
+    "military_airport",
+    "private_airport",
+    "seaplane_airport",
+)
 
 
 def record_metric(step: str, rows: int, started: float) -> None:
@@ -45,7 +54,9 @@ display(
     {
         "release": settings.release,
         "release_uri": settings.release_uri,
-        "airport_predicate": "basic_category = 'airport'",
+        "airport_predicate": (
+            f"subtype = 'airport' AND class IN {AIRPORT_CLASSES}"
+        ),
         "runway_predicate": "subtype = 'airport' AND class = 'runway'",
         "medium_state_codes": list(settings.medium_state_codes),
         "map_feature_limit": settings.map_feature_limit,
@@ -55,24 +66,28 @@ display(
 )
 
 # %% [markdown]
-# ## 1. Select every worldwide airport Place
+# ## 1. Select every worldwide airport-scale feature
 #
-# Filtering uses only Overture's broad `basic_category`. The result keeps the
-# complete input schema, including detailed categories and taxonomy,
-# confidence, names, contacts, brands, addresses, source provenance, feature
-# version, source bbox, and the helper theme/type columns added by this lab.
+# The Infrastructure class allowlist represents complete airports rather than
+# related Places or component infrastructure. The result keeps the complete
+# source schema, including names, source provenance and tags, class, subtype,
+# surface, feature version, source bbox, and the helper theme/type columns
+# added by this lab.
 
 # %%
 started = time.perf_counter()
-places = read_type(spark, settings, "places", "place")
+infrastructure = read_type(spark, settings, "base", "infrastructure")
 airports = (
-    places.where(F.col("basic_category") == "airport")
+    infrastructure.where(
+        (F.col("subtype") == "airport")
+        & F.col("class").isin(*AIRPORT_CLASSES)
+    )
     .select(
         *[
             F.expr("ST_SetSRID(geometry, 4326)").alias("geometry")
             if column == "geometry"
             else F.col(column)
-            for column in places.columns
+            for column in infrastructure.columns
         ]
     )
     .persist(StorageLevel.MEMORY_AND_DISK)
@@ -91,13 +106,10 @@ airport_quality = airports.agg(
             1,
         ).otherwise(0)
     ).alias("invalid_geometry_rows"),
-    F.min("confidence").alias("minimum_confidence"),
-    F.avg("confidence").alias("average_confidence"),
-    F.max("confidence").alias("maximum_confidence"),
 ).first()
 airport_count = int(airport_quality.airport_rows)
 if airport_count != int(airport_quality.distinct_airport_ids):
-    raise RuntimeError("Worldwide airport Place IDs are not unique")
+    raise RuntimeError("Worldwide airport infrastructure IDs are not unique")
 if int(airport_quality.invalid_geometry_rows or 0) != 0:
     raise RuntimeError(
         "Worldwide airport selection contains "
@@ -108,28 +120,23 @@ display(airport_quality.asDict())
 display({"retained_columns": airports.columns})
 
 # %% [markdown]
-# ## 2. Summarise categories, status, countries, and geometry
+# ## 2. Summarise classes, names, and geometry
 #
-# The tables below do not narrow the export. They expose useful signals for a
-# later, application-specific definition of “airport.” Country counts are
-# derived from the Places address array and therefore describe supplied
-# address attribution, not a spatial country join.
+# The tables below validate that only complete-airport classes remain and
+# expose name coverage and geometry types without narrowing the export.
 
 # %%
-airports.groupBy(F.col("categories.primary").alias("primary_category")).agg(
+airports.groupBy("class").agg(
     F.count("*").alias("airports")
-).orderBy(F.desc("airports"), "primary_category").show(30, truncate=False)
+).orderBy(F.desc("airports"), "class").show(30, truncate=False)
 
-airports.groupBy("operating_status").agg(
+airports.select(
+    F.when(F.col("names.primary").isNull(), "unnamed")
+    .otherwise("named")
+    .alias("name_status")
+).groupBy("name_status").agg(
     F.count("*").alias("airports")
-).orderBy(F.desc("airports"), "operating_status").show(30, truncate=False)
-
-airport_addresses = airports.select(
-    "id", F.explode_outer("addresses").alias("address")
-)
-airport_addresses.groupBy(F.col("address.country").alias("address_country")).agg(
-    F.countDistinct("id").alias("airports")
-).orderBy(F.desc("airports"), "address_country").show(30, truncate=False)
+).orderBy("name_status").show(truncate=False)
 
 airports.groupBy(F.expr("GeometryType(geometry)").alias("geometry_type")).agg(
     F.count("*").alias("airports")
@@ -227,7 +234,6 @@ display(
 
 # %%
 started = time.perf_counter()
-infrastructure = read_type(spark, settings, "base", "infrastructure")
 runway_candidates = bbox_overlap(
     infrastructure.where(
         (F.col("subtype") == "airport") & (F.col("class") == "runway")
