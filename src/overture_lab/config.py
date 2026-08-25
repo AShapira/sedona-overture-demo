@@ -122,6 +122,55 @@ def _small_cities(medium_state_codes: tuple[str, ...]) -> tuple[CitySpec, ...]:
 
 
 @dataclass(frozen=True)
+class WmsSettings:
+    url: str
+    layers: tuple[str, ...]
+    srs: str
+
+
+def _optional_wms() -> WmsSettings | None:
+    raw_url = os.getenv("WMS_URL")
+    raw_layers = os.getenv("WMS_LAYERS")
+    url = raw_url.strip() if raw_url and raw_url.strip() else None
+    layers_text = (
+        raw_layers.strip() if raw_layers and raw_layers.strip() else None
+    )
+    if url is None and layers_text is None:
+        return None
+    if url is None or layers_text is None:
+        raise ValueError("WMS_URL and WMS_LAYERS must be set together")
+
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("WMS_URL must be an absolute http:// or https:// URL")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("WMS_URL must not contain embedded credentials")
+    if parsed.fragment:
+        raise ValueError("WMS_URL must not contain a fragment")
+
+    try:
+        value = json.loads(layers_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("WMS_LAYERS must contain valid JSON") from exc
+    if not isinstance(value, list) or not value:
+        raise ValueError("WMS_LAYERS must be a non-empty JSON array")
+    layers = []
+    for index, item in enumerate(value):
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError(
+                f"WMS_LAYERS[{index}] must be a non-empty string"
+            )
+        layers.append(item.strip())
+    if len(set(layers)) != len(layers):
+        raise ValueError("WMS_LAYERS must not contain duplicates")
+
+    srs = os.getenv("WMS_SRS", "EPSG:3857").strip().upper()
+    if srs not in {"EPSG:3857", "EPSG:4326"}:
+        raise ValueError("WMS_SRS must be EPSG:3857 or EPSG:4326")
+    return WmsSettings(url=url, layers=tuple(layers), srs=srs)
+
+
+@dataclass(frozen=True)
 class LabSettings:
     release_uri: str
     release: str
@@ -134,6 +183,7 @@ class LabSettings:
     medium_sample_limit: int
     small_sample_limit: int
     map_feature_limit: int
+    wms: WmsSettings | None
     s3_endpoint: str | None
     s3_region: str | None
     s3_access_key: str | None
@@ -236,6 +286,7 @@ def load_settings() -> LabSettings:
         medium_sample_limit=_required_positive_int("MEDIUM_SAMPLE_LIMIT"),
         small_sample_limit=_required_positive_int("SMALL_SAMPLE_LIMIT"),
         map_feature_limit=_positive_int("MAP_FEATURE_LIMIT", 2_000),
+        wms=_optional_wms(),
         s3_endpoint=endpoint,
         s3_region=os.getenv("S3_REGION") or None,
         s3_access_key=access_key,

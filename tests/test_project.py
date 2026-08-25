@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from html.parser import HTMLParser
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -13,7 +15,7 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from overture_lab.config import CitySpec, load_settings  # noqa: E402
+from overture_lab.config import CitySpec, WmsSettings, load_settings  # noqa: E402
 from overture_lab.catalog import aggregate_s3_objects  # noqa: E402
 from overture_lab.outputs import (  # noqa: E402
     SINGLE_FILE_CSV_COLUMNS,
@@ -29,6 +31,7 @@ from overture_lab.regions import (  # noqa: E402
     _resolve_city_division_ids,
 )
 from overture_lab.scratch import scratch_status  # noqa: E402
+from overture_lab.visualize import _offline_deck_document  # noqa: E402
 
 
 SCALE_ENVIRONMENT = {
@@ -146,6 +149,89 @@ class ConfigurationTests(unittest.TestCase):
         self.assertEqual(public["s3_secret_key"], "<set>")
         self.assertNotIn("example-access", repr(public))
         self.assertNotIn("example-secret", repr(public))
+
+    def test_optional_wms_is_disabled_or_parsed_strictly(self):
+        with patch.dict(os.environ, test_environment(), clear=True):
+            self.assertIsNone(load_settings().wms)
+
+        environment = test_environment(**{
+            "WMS_URL": " https://maps.airgap.example/geoserver/wms?map=base ",
+            "WMS_LAYERS": '[" workspace:imagery ", "workspace:labels"]',
+            "WMS_SRS": "epsg:4326",
+        })
+        with patch.dict(os.environ, environment, clear=True):
+            settings = load_settings()
+        self.assertEqual(
+            settings.wms,
+            WmsSettings(
+                url="https://maps.airgap.example/geoserver/wms?map=base",
+                layers=("workspace:imagery", "workspace:labels"),
+                srs="EPSG:4326",
+            ),
+        )
+
+    def test_partial_or_unsafe_wms_configuration_is_rejected(self):
+        cases = [
+            ({"WMS_URL": "http://maps.airgap.example/wms"}, "set together"),
+            ({"WMS_LAYERS": '["workspace:base"]'}, "set together"),
+            (
+                {
+                    "WMS_URL": "ftp://maps.airgap.example/wms",
+                    "WMS_LAYERS": '["workspace:base"]',
+                },
+                "absolute http",
+            ),
+            (
+                {
+                    "WMS_URL": "https://user:secret@maps.airgap.example/wms",
+                    "WMS_LAYERS": '["workspace:base"]',
+                },
+                "credentials",
+            ),
+            (
+                {
+                    "WMS_URL": "https://maps.airgap.example/wms#fragment",
+                    "WMS_LAYERS": '["workspace:base"]',
+                },
+                "fragment",
+            ),
+            (
+                {
+                    "WMS_URL": "https://maps.airgap.example/wms",
+                    "WMS_LAYERS": "not-json",
+                },
+                "valid JSON",
+            ),
+            (
+                {
+                    "WMS_URL": "https://maps.airgap.example/wms",
+                    "WMS_LAYERS": "[]",
+                },
+                "non-empty JSON array",
+            ),
+            (
+                {
+                    "WMS_URL": "https://maps.airgap.example/wms",
+                    "WMS_LAYERS": '["workspace:base", "workspace:base"]',
+                },
+                "duplicates",
+            ),
+            (
+                {
+                    "WMS_URL": "https://maps.airgap.example/wms",
+                    "WMS_LAYERS": '["workspace:base"]',
+                    "WMS_SRS": "EPSG:3395",
+                },
+                "WMS_SRS",
+            ),
+        ]
+        for overrides, message in cases:
+            with self.subTest(overrides=overrides):
+                with patch.dict(
+                    os.environ, test_environment(**overrides), clear=True
+                ):
+                    with self.assertRaisesRegex(ValueError, message):
+                        load_settings()
 
     def test_windows_mode_requires_s3a_release(self):
         with patch.dict(
@@ -477,6 +563,8 @@ class NotebookTests(unittest.TestCase):
             self.assertIn("SMALL_CITIES:?", compose)
             self.assertIn("MEDIUM_SAMPLE_LIMIT:?", compose)
             self.assertIn("SMALL_SAMPLE_LIMIT:?", compose)
+            self.assertIn("WMS_URL", compose)
+            self.assertIn("WMS_LAYERS", compose)
 
     def test_removed_geographic_terms_and_interfaces_are_absent(self):
         forbidden = (
@@ -518,6 +606,80 @@ class NotebookTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class OfflineRendererTests(unittest.TestCase):
+    def test_clean_template_has_no_external_resource_elements(self):
+        class FakeDeck:
+            _tooltip = {"html": "<b>{name}</b>"}
+
+            @staticmethod
+            def to_json():
+                return '{"description":"</script><script src=bad></script>"}'
+
+        document = _offline_deck_document(
+            FakeDeck(),
+            bundle="window.createDeck = () => null;",
+        )
+        self.assertNotRegex(document, r"<script[^>]+src=")
+        self.assertNotRegex(document, r"<link\b")
+        self.assertIn(r"\u003c/script\u003e", document)
+        self.assertIn("window.createDeck", document)
+
+    @unittest.skipUnless(importlib.util.find_spec("pydeck"), "pydeck unavailable")
+    def test_wms_serializes_before_vector_layers(self):
+        import pydeck as pdk
+
+        from overture_lab.visualize import build_interactive_deck
+
+        vector = pdk.Layer(
+            "GeoJsonLayer",
+            {"type": "FeatureCollection", "features": []},
+        )
+        deck = build_interactive_deck(
+            [vector],
+            pdk.ViewState(longitude=0, latitude=0, zoom=1),
+            wms=WmsSettings(
+                url="http://maps.airgap.example/wms",
+                layers=("workspace:imagery", "workspace:labels"),
+                srs="EPSG:3857",
+            ),
+        )
+        layers = json.loads(deck.to_json())["layers"]
+        self.assertEqual(layers[0]["@@type"], "_WMSLayer")
+        self.assertEqual(layers[0]["serviceType"], "wms")
+        self.assertEqual(
+            layers[0]["layers"],
+            ["workspace:imagery", "workspace:labels"],
+        )
+        self.assertEqual(layers[0]["srs"], "EPSG:3857")
+        self.assertEqual(
+            layers[0]["loadOptions"],
+            {"core": {"worker": False}},
+        )
+        self.assertEqual(layers[1]["@@type"], "GeoJsonLayer")
+
+        class ResourceParser(HTMLParser):
+            def __init__(self):
+                super().__init__()
+                self.resources = []
+
+            def handle_starttag(self, tag, attrs):
+                for key, value in attrs:
+                    if key in {"src", "href"}:
+                        self.resources.append((tag, key, value))
+
+        parser = ResourceParser()
+        parser.feed(_offline_deck_document(deck))
+        self.assertEqual(parser.resources, [])
+
+        vector_only = build_interactive_deck(
+            [vector],
+            pdk.ViewState(longitude=0, latitude=0, zoom=1),
+        )
+        vector_layers = json.loads(vector_only.to_json())["layers"]
+        self.assertEqual(len(vector_layers), 1)
+        self.assertEqual(vector_layers[0]["@@type"], "GeoJsonLayer")
 
 
 if __name__ == "__main__":

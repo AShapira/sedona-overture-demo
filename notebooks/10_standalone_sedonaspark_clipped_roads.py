@@ -361,7 +361,11 @@ map_roads = (
     )
 )
 
-from overture_lab.visualize import collect_geodataframe
+from overture_lab.visualize import (
+    build_interactive_deck,
+    collect_geodataframe,
+    offline_deck_display,
+)
 
 map_gdf = collect_geodataframe(
     map_roads,
@@ -427,7 +431,8 @@ plt.show()
 #
 # The same bounded sample is rendered with pan, zoom, class colours, and
 # tooltips. The initial zoom is derived from the configured boundary extent;
-# `map_style=None` prevents network basemap requests.
+# The deck.gl renderer is embedded locally. The only optional network source is
+# the configured internal WMS background.
 
 # %%
 import pydeck as pdk
@@ -471,22 +476,22 @@ boundary_layer = pdk.Layer(
     get_line_color=[17, 24, 39, 240],
     line_width_min_pixels=2,
 )
-deck = pdk.Deck(
-    layers=[boundary_layer, road_layer],
-    initial_view_state=pdk.ViewState(
+deck = build_interactive_deck(
+    [boundary_layer, road_layer],
+    pdk.ViewState(
         longitude=(minx + maxx) / 2,
         latitude=(miny + maxy) / 2,
         zoom=initial_zoom,
     ),
+    wms=settings.wms,
     tooltip={
         "html": (
             "<b>{road_class}</b><br/>"
             "road: {road_id}<br/>source: {source_segment_id}"
         )
     },
-    map_style=None,
 )
-display(deck)
+offline_deck_display(deck)
 
 # %% [markdown]
 # ## Performance summary

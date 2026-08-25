@@ -96,10 +96,11 @@ mapped, axis = static_geometry_plot(
     title=f"Places in configured cities by category: {settings.small_city_label}",
 )
 
-# The interactive deck has no network basemap. VS Code renders the layer from
-# the bounded local data only.
+# The renderer is embedded locally. When configured, the browser requests only
+# the approved internal WMS; otherwise the background remains blank.
 interactive_geometry_map(
     places["small"],
     limit=min(settings.map_feature_limit, 500),
     columns=["basic_category", "confidence", "geometry"],
+    wms=settings.wms,
 )

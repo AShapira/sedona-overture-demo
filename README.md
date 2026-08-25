@@ -115,6 +115,8 @@ Important variables are documented in `.env.example`. In particular:
   exactly, and each code must also appear in `MEDIUM_STATE_CODES`.
 - `MEDIUM_SAMPLE_LIMIT`, `SMALL_SAMPLE_LIMIT`, and `MAP_FEATURE_LIMIT`
   separate medium, small, and browser-safe data sizes.
+- `WMS_URL` and JSON `WMS_LAYERS` optionally add an internal WMS background to
+  all interactive maps. `WMS_SRS` defaults to `EPSG:3857`.
 - `SEDONA_SCRATCH_BUDGET_GB` and `SEDONA_SCRATCH_RESERVE_GB` guard the
   namespaced scratch tree before work begins. Docker bind mounts do not expose
   a portable hard per-directory quota, so the lab never claims this is a
@@ -126,6 +128,35 @@ For S3-compatible storage, set the endpoint and credentials only in the
 ignored `.env.windows-s3-airgap` file. The Sedona 1.9.0 image already contains
 the Hadoop S3A and AWS SDK jars, so no online dependency download is needed.
 Diagnostics redact both credential values.
+
+## Optional internal WMS background
+
+Interactive maps use an embedded renderer and no public basemap. To place an
+air-gap WMS below the bounded Overture vector layers, configure both values:
+
+```dotenv
+WMS_URL=https://maps.airgap.example/geoserver/wms
+WMS_LAYERS=["workspace:orthophoto"]
+WMS_SRS=EPSG:3857
+```
+
+Leave both `WMS_URL` and `WMS_LAYERS` unset for a blank background. Layer names
+must be the named layers advertised by WMS `GetCapabilities`; multiple names
+may be supplied in the JSON array. `WMS_SRS` accepts `EPSG:3857` or
+`EPSG:4326`.
+
+The map runs in the workstation browser, so `WMS_URL` must be resolvable and
+reachable from that browser rather than only from the container network. The
+WMS must allow cross-origin requests from the Jupyter origin, normally
+`http://127.0.0.1:8888`. An HTTPS Jupyter page cannot load an HTTP WMS, and a
+private WMS CA must be trusted by the workstation browser; the Spark JVM
+truststore does not establish browser trust. This integration is deliberately
+unauthenticated: do not put credentials in `WMS_URL` or notebook output. Use an
+approved same-origin gateway if a future deployment requires authentication.
+
+In a strict air gap, browser traffic should be limited to the Jupyter origin
+and the configured WMS origin. The renderer itself does not load CDN scripts,
+stylesheets, fonts, worker scripts, or public tiles.
 
 Notebook 08 is read-only unless explicitly enabled. It first creates and
 deletes a unique permission marker below the derived prefix. A clean create
