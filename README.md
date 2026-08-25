@@ -140,9 +140,13 @@ local fallback is never used. Each successful unique run prefix contains
 exactly `roads.geoparquet` and `roads.csv`. Spark writes each format through a
 temporary one-part directory, promotes the part to the stable object name,
 removes Spark metadata, and validates both objects by reading them back. The
-CSV stores geometry as quoted WKT. This serial finalisation is slower than
-normal parallel Spark output and should be used only when downstream consumers
-require one object per format.
+GeoParquet has exactly the original physical transportation segment column
+structure, without the lab-only `theme` and `feature_type` labels; each row
+contains a native clipped LineString and its recalculated source-style `bbox`.
+The CSV alone adds the export identifiers and is deliberately limited to
+`road_id`, `source_segment_id`, `road_class`, and quoted `geometry_wkt`.
+This serial finalisation is slower than normal parallel Spark output and should
+be used only when downstream consumers require one object per format.
 
 Notebook 11 selects every worldwide Place whose `basic_category` is `airport`
 and retains the complete source row for downstream refinement. It also selects

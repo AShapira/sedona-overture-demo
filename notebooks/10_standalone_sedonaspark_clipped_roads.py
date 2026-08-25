@@ -5,7 +5,9 @@
 # **Inputs:** raw `divisions/division_area` and `transportation/segment`
 # GeoParquet from the configured Overture release.
 # **Outputs:** exactly one `roads.geoparquet` object and one `roads.csv` object
-# below a unique derived S3 run prefix when writing is enabled.
+# below a unique derived S3 run prefix when writing is enabled. GeoParquet has
+# exactly the source segment schema, with clipped native geometry and updated
+# bbox values; CSV contains only the documented subset and geometry as WKT.
 #
 # This lesson is independent of earlier notebook outputs. It clips broad
 # drivable road classes to the union of the land-country areas named by
@@ -139,16 +141,21 @@ display(
 # %% [markdown]
 # ## 2. Prune the global transportation scan
 #
-# Projection and road-class filtering happen before the spatial work. Four
-# scalar bbox-overlap comparisons are ORed across the configured country-area
-# bboxes. These comparisons remove obvious global misses but do not replace an
-# exact geometry predicate.
+# Road-class filtering happens before the spatial work while the complete
+# physical transportation segment schema is retained for GeoParquet. The
+# lab-only `theme` and `feature_type` labels are excluded. Four scalar
+# bbox-overlap comparisons are ORed across the configured country-area bboxes.
+# These comparisons remove obvious global misses but do not replace an exact
+# geometry predicate.
 
 # %%
 started = time.perf_counter()
-segments = read_type(
-    spark, settings, "transportation", "segment"
-).select("id", "class", "subtype", "bbox", "geometry")
+segments = read_type(spark, settings, "transportation", "segment").drop(
+    "theme", "feature_type"
+)
+source_attribute_columns = [
+    column for column in segments.columns if column != "geometry"
+]
 candidates = (
     bbox_overlap(
         segments.where(
@@ -178,8 +185,7 @@ clipped = (
     candidates.crossJoin(F.broadcast(boundary))
     .where(F.expr("ST_Intersects(geometry, boundary_geometry)"))
     .select(
-        F.col("id").alias("source_segment_id"),
-        F.col("class").alias("road_class"),
+        *[F.col(column) for column in source_attribute_columns],
         F.expr(
             "ST_CollectionExtract("
             "ST_Intersection(geometry, boundary_geometry), 2)"
@@ -187,11 +193,11 @@ clipped = (
     )
 )
 roads = (
-    clipped.selectExpr(
-        "source_segment_id",
-        "road_class",
-        "posexplode(ST_Dump(clipped_geometry)) "
-        "AS (part_number, geometry)",
+    clipped.select(
+        *[F.col(column) for column in source_attribute_columns],
+        F.posexplode(F.expr("ST_Dump(clipped_geometry)")).alias(
+            "part_number", "geometry"
+        ),
     )
     .where(
         "geometry IS NOT NULL "
@@ -202,14 +208,47 @@ roads = (
     )
     .select(
         F.concat_ws(
-            "#", F.col("source_segment_id"), F.col("part_number")
+            "#", F.col("id"), F.col("part_number")
         ).alias("road_id"),
-        "source_segment_id",
-        "road_class",
+        F.col("id").alias("source_segment_id"),
+        F.col("class").alias("road_class"),
+        "part_number",
+        *[
+            F.struct(
+                F.expr("ST_XMin(geometry)").alias("xmin"),
+                F.expr("ST_YMin(geometry)").alias("ymin"),
+                F.expr("ST_XMax(geometry)").alias("xmax"),
+                F.expr("ST_YMax(geometry)").alias("ymax"),
+            ).alias("bbox")
+            if column == "bbox"
+            else F.col(column)
+            for column in source_attribute_columns
+        ],
         F.expr("ST_SetSRID(geometry, 4326)").alias("geometry"),
     )
     .persist(StorageLevel.MEMORY_AND_DISK)
 )
+missing_source_columns = set(segments.columns) - set(roads.columns)
+if missing_source_columns:
+    raise RuntimeError(
+        "Clipped roads dropped source columns: "
+        f"{sorted(missing_source_columns)}"
+    )
+geoparquet_roads = roads.select(
+    *[F.col(column) for column in segments.columns]
+)
+source_schema = tuple(
+    (field.name, field.dataType.json()) for field in segments.schema.fields
+)
+geoparquet_schema = tuple(
+    (field.name, field.dataType.json())
+    for field in geoparquet_roads.schema.fields
+)
+if geoparquet_schema != source_schema:
+    raise RuntimeError(
+        "Clipped-roads GeoParquet schema differs from the source segment "
+        f"schema: expected {source_schema}, found {geoparquet_schema}"
+    )
 road_count = roads.count()
 record_metric("exact clipping and LineString expansion", road_count, started)
 candidates.unpersist()
@@ -238,6 +277,7 @@ if int(quality.invalid_rows or 0) != 0:
         f"Clipping validation found {quality.invalid_rows} invalid rows"
     )
 display(quality.asDict())
+display({"geoparquet_columns": geoparquet_roads.columns})
 
 # %% [markdown]
 # ## 4. Optionally write exactly two named S3 objects
@@ -245,9 +285,11 @@ display(quality.asDict())
 # `WRITE_DERIVED=false` keeps this cell read-only. When enabled, the writer
 # probes `DERIVED_OUTPUT_URI`, creates a unique run, serialises only the final
 # output stage, promotes Spark's part files to `roads.geoparquet` and
-# `roads.csv`, removes staging metadata, and reads both objects back. The CSV
-# represents geometry as quoted WKT. A denied probe or partial write never
-# falls back to local storage.
+# `roads.csv`, removes staging metadata, and reads both objects back. GeoParquet
+# uses the exact source segment schema and native clipped geometry. CSV is
+# restricted to `road_id`, `source_segment_id`, `road_class`, and quoted
+# `geometry_wkt`. A denied probe or partial write never falls back to local
+# storage.
 
 # %%
 started = time.perf_counter()
@@ -256,6 +298,7 @@ export_result = write_single_file_exports(
     spark,
     settings,
     dataset_name="clipped_roads",
+    geoparquet_dataframe=geoparquet_roads,
 )
 if export_result.status == "written":
     record_metric("single-file S3 exports", road_count, started)

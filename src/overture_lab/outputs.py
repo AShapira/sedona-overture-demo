@@ -435,13 +435,27 @@ def _verify_single_file_exports(
     geoparquet_uri: str,
     csv_uri: str,
     expected_rows: int,
+    expected_geoparquet_schema: tuple[tuple[str, str], ...],
 ) -> None:
     from pyspark.sql import functions as F
-    from pyspark.sql.types import StructField, StructType, StringType
 
     written = spark.read.format("geoparquet").load(geoparquet_uri)
-    if "geometry_bbox" not in written.columns:
-        raise RuntimeError("GeoParquet output is missing geometry_bbox")
+    expected_types = dict(expected_geoparquet_schema)
+    expected_columns = tuple(name for name, _ in expected_geoparquet_schema)
+    if tuple(written.columns) != expected_columns:
+        raise RuntimeError(
+            "GeoParquet read-back schema mismatch: expected exactly "
+            f"{list(expected_columns)}, found {written.columns}"
+        )
+    actual_types = {
+        field.name: field.dataType.json()
+        for field in written.schema.fields
+    }
+    if actual_types != expected_types:
+        raise RuntimeError(
+            "GeoParquet read-back data types do not match the complete input "
+            f"schema: expected {expected_types}, found {actual_types}"
+        )
     geo_validation = written.agg(
         F.count("*").alias("row_count"),
         F.sum(
@@ -453,7 +467,11 @@ def _verify_single_file_exports(
                     "OR GeometryType(geometry) <> 'LINESTRING' "
                     "OR ST_Length(geometry) <= 0 "
                     "OR ST_SRID(geometry) <> 4326 "
-                    "OR geometry_bbox IS NULL"
+                    "OR bbox IS NULL "
+                    "OR bbox.xmin <> ST_XMin(geometry) "
+                    "OR bbox.ymin <> ST_YMin(geometry) "
+                    "OR bbox.xmax <> ST_XMax(geometry) "
+                    "OR bbox.ymax <> ST_YMax(geometry)"
                 ),
                 1,
             ).otherwise(0)
@@ -469,15 +487,37 @@ def _verify_single_file_exports(
             "GeoParquet read-back contains "
             f"{geo_validation.invalid_rows} invalid rows"
         )
-
-    csv_schema = StructType(
-        [StructField(name, StringType(), True) for name in SINGLE_FILE_CSV_COLUMNS]
+    metadata = _geoparquet_metadata(spark, geoparquet_uri)
+    primary_column = metadata.get("primary_column")
+    columns_metadata = metadata.get("columns", {})
+    geometry_metadata = (
+        columns_metadata.get(primary_column, {})
+        if isinstance(columns_metadata, dict)
+        else {}
     )
+    bbox_covering = geometry_metadata.get("covering", {}).get("bbox", {})
+    expected_covering = {
+        axis: ["bbox", axis] for axis in ("xmin", "ymin", "xmax", "ymax")
+    }
+    if (
+        metadata.get("version") != "1.1.0"
+        or primary_column != "geometry"
+        or bbox_covering != expected_covering
+    ):
+        raise RuntimeError(
+            "GeoParquet output metadata does not use the source bbox column "
+            "as the geometry covering"
+        )
+
     csv_frame = (
         spark.read.option("header", "true")
-        .schema(csv_schema)
         .csv(csv_uri)
     )
+    if tuple(csv_frame.columns) != SINGLE_FILE_CSV_COLUMNS:
+        raise RuntimeError(
+            "CSV read-back columns do not match the defined subset: expected "
+            f"{list(SINGLE_FILE_CSV_COLUMNS)}, found {csv_frame.columns}"
+        )
     csv_validation = csv_frame.select(
         *SINGLE_FILE_CSV_COLUMNS,
         F.expr("ST_GeomFromWKT(geometry_wkt)").alias("parsed_geometry"),
@@ -529,8 +569,9 @@ def write_single_file_exports(
     settings: LabSettings,
     *,
     dataset_name: str,
+    geoparquet_dataframe,
 ) -> SingleFileExportResult:
-    """Write exactly one GeoParquet and one WKT CSV object to a unique S3 run."""
+    """Write source-schema GeoParquet and subset WKT CSV to a unique S3 run."""
     required_columns = {
         "road_id",
         "source_segment_id",
@@ -541,6 +582,17 @@ def write_single_file_exports(
     if missing:
         raise ValueError(
             f"Single-file road export is missing columns: {sorted(missing)}"
+        )
+    geoparquet_required = {"bbox", "geometry"}
+    geoparquet_missing = geoparquet_required - set(geoparquet_dataframe.columns)
+    if geoparquet_missing:
+        raise ValueError(
+            "Single-file road GeoParquet export is missing columns: "
+            f"{sorted(geoparquet_missing)}"
+        )
+    if "geometry_bbox" in geoparquet_dataframe.columns:
+        raise ValueError(
+            "Road GeoParquet must use the source bbox column, not geometry_bbox"
         )
     if not settings.write_derived:
         return SingleFileExportResult(
@@ -570,6 +622,12 @@ def write_single_file_exports(
     geoparquet_uri = f"{run_prefix}/roads.geoparquet"
     csv_uri = f"{run_prefix}/roads.csv"
     row_count = dataframe.count()
+    geoparquet_row_count = geoparquet_dataframe.count()
+    if geoparquet_row_count != row_count:
+        raise RuntimeError(
+            "GeoParquet and CSV source row counts differ: "
+            f"{geoparquet_row_count} versus {row_count}"
+        )
     csv_frame = dataframe.select(
         "road_id",
         "source_segment_id",
@@ -578,7 +636,7 @@ def write_single_file_exports(
     )
     try:
         _promote_single_part(
-            dataframe,
+            geoparquet_dataframe,
             spark,
             staging_uri=f"{run_prefix}/._geoparquet_staging",
             destination_uri=geoparquet_uri,
@@ -586,7 +644,7 @@ def write_single_file_exports(
             options={
                 "compression": "zstd",
                 "geoparquet.version": "1.1.0",
-                "geoparquet.covering.mode": "auto",
+                "geoparquet.covering.geometry": "bbox",
             },
         )
         _promote_single_part(
@@ -603,6 +661,10 @@ def write_single_file_exports(
             geoparquet_uri=geoparquet_uri,
             csv_uri=csv_uri,
             expected_rows=row_count,
+            expected_geoparquet_schema=tuple(
+                (field.name, field.dataType.json())
+                for field in geoparquet_dataframe.schema.fields
+            ),
         )
     except Exception as exc:
         raise RuntimeError(

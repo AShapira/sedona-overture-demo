@@ -304,7 +304,7 @@ fi
   -w /workspace \
   --entrypoint python3 \
   "${sedona_image}" -c \
-  'from pyspark.sql import functions as F; from overture_lab.config import load_settings; from overture_lab.outputs import write_single_file_exports, write_single_geoparquet; from overture_lab.spark import create_sedona, read_type; s=load_settings(); assert s.storage_mode=="local"; spark=create_sedona(s,"local-input-s3-output-smoke"); df=read_type(spark,s,"transportation","segment").where(F.col("id")=="inside-road").select(F.concat_ws("#",F.col("id"),F.lit(0)).alias("road_id"),F.col("id").alias("source_segment_id"),F.col("class").alias("road_class"),F.expr("ST_SetSRID(geometry, 4326)").alias("geometry")); result=write_single_file_exports(df,spark,s,dataset_name="local_input_roads"); assert result.row_count==1 and result.geoparquet_uri.startswith("s3a://"), result; raw=read_type(spark,s,"places","place"); airport=raw.where(F.col("basic_category")=="airport").select(*[F.expr("ST_SetSRID(geometry, 4326)").alias("geometry") if name=="geometry" else F.col(name) for name in raw.columns]); geo_result=write_single_geoparquet(airport,spark,s,dataset_name="local_input_airports",object_name="airports.geoparquet"); assert geo_result.row_count==2 and geo_result.geoparquet_uri.startswith("s3a://"), geo_result'
+  'from pyspark.sql import functions as F; from overture_lab.config import load_settings; from overture_lab.outputs import write_single_file_exports, write_single_geoparquet; from overture_lab.spark import create_sedona, read_type; s=load_settings(); assert s.storage_mode=="local"; spark=create_sedona(s,"local-input-s3-output-smoke"); segment=read_type(spark,s,"transportation","segment").where(F.col("id")=="inside-road"); df=segment.select(F.concat_ws("#",F.col("id"),F.lit(0)).alias("road_id"),F.col("id").alias("source_segment_id"),F.col("class").alias("road_class"),F.expr("ST_SetSRID(geometry, 4326)").alias("geometry")); result=write_single_file_exports(df,spark,s,dataset_name="local_input_roads",geoparquet_dataframe=segment); assert result.row_count==1 and result.geoparquet_uri.startswith("s3a://"), result; raw=read_type(spark,s,"places","place"); airport=raw.where(F.col("basic_category")=="airport").select(*[F.expr("ST_SetSRID(geometry, 4326)").alias("geometry") if name=="geometry" else F.col(name) for name in raw.columns]); geo_result=write_single_geoparquet(airport,spark,s,dataset_name="local_input_airports",object_name="airports.geoparquet"); assert geo_result.row_count==2 and geo_result.geoparquet_uri.startswith("s3a://"), geo_result'
 
 "${container_program}" run --rm --network "${network}" \
   --security-opt=no-new-privileges \
@@ -403,7 +403,8 @@ fi
   "${sedona_image}" -c \
   'from overture_lab.config import load_settings; from overture_lab.outputs import write_single_file_exports, write_single_geoparquet; from overture_lab.spark import create_sedona; s=load_settings(); spark=create_sedona(s,"s3-readonly-single-file-smoke"); df=spark.sql("SELECT '\''road#0'\'' AS road_id, '\''road'\'' AS source_segment_id, '\''primary'\'' AS road_class, ST_SetSRID(ST_GeomFromWKT('\''LINESTRING (34.2 32.2, 34.8 32.8)'\''), 4326) AS geometry"); denied=False
 try:
-    write_single_file_exports(df,spark,s,dataset_name="clipped_roads")
+    geoparquet_df=df.selectExpr("source_segment_id AS id", "struct(34.2D AS xmin, 32.2D AS ymin, 34.8D AS xmax, 32.8D AS ymax) AS bbox", "geometry")
+    write_single_file_exports(df,spark,s,dataset_name="clipped_roads",geoparquet_dataframe=geoparquet_df)
 except RuntimeError as exc:
     denied="denied" in str(exc).lower() and "fallback" in str(exc).lower()
 assert denied, "single-file writer did not stop after denied probe"

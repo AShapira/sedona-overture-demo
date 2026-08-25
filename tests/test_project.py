@@ -210,7 +210,15 @@ class ConfigurationTests(unittest.TestCase):
         with patch.dict(os.environ, test_environment(), clear=True):
             settings = load_settings()
         result = write_single_file_exports(
-            dataframe, None, settings, dataset_name="clipped_roads"
+            dataframe,
+            None,
+            settings,
+            dataset_name="clipped_roads",
+            geoparquet_dataframe=type(
+                "SegmentFrame",
+                (),
+                {"columns": ["id", "bbox", "geometry"]},
+            )(),
         )
         self.assertEqual(result.status, "dry-run")
         self.assertIsNone(result.run_prefix)
@@ -237,7 +245,15 @@ class ConfigurationTests(unittest.TestCase):
             settings = load_settings()
         with self.assertRaisesRegex(ValueError, "require DERIVED_OUTPUT_URI"):
             write_single_file_exports(
-                dataframe, None, settings, dataset_name="clipped_roads"
+                dataframe,
+                None,
+                settings,
+                dataset_name="clipped_roads",
+                geoparquet_dataframe=type(
+                    "SegmentFrame",
+                    (),
+                    {"columns": ["id", "bbox", "geometry"]},
+                )(),
             )
 
     def test_single_file_paths_and_csv_schema_are_stable(self):
@@ -275,7 +291,15 @@ class ConfigurationTests(unittest.TestCase):
             settings = load_settings()
         with self.assertRaisesRegex(ValueError, "missing columns"):
             write_single_file_exports(
-                dataframe, None, settings, dataset_name="clipped_roads"
+                dataframe,
+                None,
+                settings,
+                dataset_name="clipped_roads",
+                geoparquet_dataframe=type(
+                    "SegmentFrame",
+                    (),
+                    {"columns": ["id", "bbox", "geometry"]},
+                )(),
             )
 
     def test_single_geoparquet_result_contract(self):
