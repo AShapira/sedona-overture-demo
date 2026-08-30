@@ -1,5 +1,5 @@
 # %% [markdown]
-# # 10 — Standalone regional SedonaSpark road clipping
+# # 10 — Standalone regional SedonaSpark road boundary selection
 #
 # **Execution engine:** SedonaSpark.
 # **Inputs:** raw `divisions/division_area` and `transportation/segment`
@@ -7,13 +7,14 @@
 # **Outputs:** exactly one `roads.geoparquet`, one `roads.csv`, and one
 # `boundary.geoparquet` object below a unique derived run prefix when
 # writing is enabled. The roads GeoParquet has exactly the source segment
-# schema, with clipped native geometry and updated bbox values; CSV contains
-# the configured subset and geometry as WKT; boundary GeoParquet contains the
-# one-row configured land-country union used for clipping.
+# schema, with original native geometry and bbox values; CSV contains the
+# configured subset and full geometry as WKT; boundary GeoParquet contains the
+# one-row configured land-country union used for selection.
 #
-# This lesson is independent of earlier notebook outputs. It clips broad
-# drivable road classes to the union of the land-country areas named by
-# `MEDIUM_STATE_CODES`. The configured codes are source-data identifiers, not
+# This lesson is independent of earlier notebook outputs. It selects broad
+# drivable road classes that intersect the union of the land-country areas
+# named by `MEDIUM_STATE_CODES`. Crossing and boundary-touching segments are
+# retained whole. The configured codes are source-data identifiers, not
 # geopolitical assertions.
 #
 # ### Road-class scope
@@ -44,11 +45,11 @@ from pyspark.sql import functions as F
 
 from overture_lab.config import load_settings
 from overture_lab.outputs import write_single_file_exports
-from overture_lab.regions import Bounds, bbox_overlap
+from overture_lab.regions import Bounds, bbox_overlap, exact_intersection
 from overture_lab.spark import create_sedona, read_type
 
 settings = load_settings()
-spark = create_sedona(settings, "10-standalone-regional-road-clipping")
+spark = create_sedona(settings, "10-standalone-regional-road-selection")
 
 ROAD_CLASSES = (
     "motorway",
@@ -106,7 +107,7 @@ display(
 # The notebook reads the immutable division-area source directly. Every
 # configured state code must resolve to at least one land-country area. Keeping
 # the individual source bboxes permits Parquet-friendly pruning before the
-# exact union-boundary operation.
+# exact union-boundary selection.
 
 # %%
 started = time.perf_counter()
@@ -182,21 +183,6 @@ started = time.perf_counter()
 segments = read_type(spark, settings, "transportation", "segment").drop(
     "theme", "feature_type"
 )
-source_attribute_columns = [
-    column for column in segments.columns if column != "geometry"
-]
-source_bbox_field_names = segments.schema["bbox"].dataType.fieldNames()
-bbox_expressions = {
-    "xmin": F.expr("ST_XMin(geometry)"),
-    "xmax": F.expr("ST_XMax(geometry)"),
-    "ymin": F.expr("ST_YMin(geometry)"),
-    "ymax": F.expr("ST_YMax(geometry)"),
-}
-if set(source_bbox_field_names) != set(bbox_expressions):
-    raise RuntimeError(
-        "Source bbox fields differ from the expected coordinate axes: "
-        f"{source_bbox_field_names}"
-    )
 candidates = (
     bbox_overlap(
         segments.where(
@@ -213,66 +199,32 @@ record_metric("bbox filtering and repartitioning", candidate_count, started)
 display({"bbox_candidates": candidate_count})
 
 # %% [markdown]
-# ## 3. Clip exactly and expand line components
+# ## 3. Select exact intersections and retain whole segments
 #
-# The single union boundary is broadcast to every task. `ST_Intersects`
-# rejects bbox false positives and `ST_Intersection` clips crossing segments.
-# Intersection may create collections or multipart lines, so line components
-# are extracted and dumped to one valid LineString per output row.
+# A broadcast exact left-semi spatial join rejects bbox false positives without
+# changing the candidate rows. Segments that cross or touch the union boundary
+# are retained with their complete source geometry, bbox, and attributes. Only
+# segments completely disjoint from the exact boundary are excluded.
 
 # %%
 started = time.perf_counter()
-clipped = (
-    candidates.crossJoin(F.broadcast(boundary))
-    .where(F.expr("ST_Intersects(geometry, boundary_geometry)"))
-    .select(
-        *[F.col(column) for column in source_attribute_columns],
-        F.expr(
-            "ST_CollectionExtract("
-            "ST_Intersection(geometry, boundary_geometry), 2)"
-        ).alias("clipped_geometry"),
-    )
-)
 roads = (
-    clipped.select(
-        *[F.col(column) for column in source_attribute_columns],
-        F.posexplode(F.expr("ST_Dump(clipped_geometry)")).alias(
-            "part_number", "geometry"
-        ),
-    )
-    .where(
-        "geometry IS NOT NULL "
-        "AND NOT ST_IsEmpty(geometry) "
-        "AND ST_IsValid(geometry) "
-        "AND GeometryType(geometry) = 'LINESTRING' "
-        "AND ST_Length(geometry) > 0"
+    exact_intersection(
+        candidates,
+        boundary.select(F.col("boundary_geometry").alias("geometry")),
     )
     .select(
-        F.concat_ws(
-            "#", F.col("id"), F.col("part_number")
-        ).alias("road_id"),
+        F.concat_ws("#", F.col("id"), F.lit(0)).alias("road_id"),
         F.col("id").alias("source_segment_id"),
         F.col("class").alias("road_class"),
-        "part_number",
-        *[
-            F.struct(
-                *[
-                    bbox_expressions[field_name].alias(field_name)
-                    for field_name in source_bbox_field_names
-                ]
-            ).alias("bbox")
-            if column == "bbox"
-            else F.col(column)
-            for column in source_attribute_columns
-        ],
-        F.expr("ST_SetSRID(geometry, 4326)").alias("geometry"),
+        *[F.col(column) for column in segments.columns],
     )
     .persist(StorageLevel.MEMORY_AND_DISK)
 )
 missing_source_columns = set(segments.columns) - set(roads.columns)
 if missing_source_columns:
     raise RuntimeError(
-        "Clipped roads dropped source columns: "
+        "Selected roads dropped source columns: "
         f"{sorted(missing_source_columns)}"
     )
 geoparquet_roads = roads.select(
@@ -287,16 +239,19 @@ geoparquet_schema = tuple(
 )
 if geoparquet_schema != source_schema:
     raise RuntimeError(
-        "Clipped-roads GeoParquet schema differs from the source segment "
+        "Selected-roads GeoParquet schema differs from the source segment "
         f"schema: expected {source_schema}, found {geoparquet_schema}"
     )
 road_count = roads.count()
-record_metric("exact clipping and LineString expansion", road_count, started)
+record_metric("exact whole-segment boundary selection", road_count, started)
 candidates.unpersist()
 
 quality = roads.agg(
     F.count("*").alias("rows"),
     F.countDistinct("road_id").alias("distinct_road_ids"),
+    F.countDistinct("source_segment_id").alias(
+        "distinct_source_segment_ids"
+    ),
     F.sum(
         F.when(
             F.expr(
@@ -312,10 +267,13 @@ quality = roads.agg(
     ).alias("invalid_rows"),
 ).first()
 if quality.rows != quality.distinct_road_ids:
-    raise RuntimeError("Clipped road_id values are not unique")
+    raise RuntimeError("Selected road_id values are not unique")
+if quality.rows != quality.distinct_source_segment_ids:
+    raise RuntimeError("Selected source segment IDs are not unique")
 if int(quality.invalid_rows or 0) != 0:
     raise RuntimeError(
-        f"Clipping validation found {quality.invalid_rows} invalid rows"
+        "Whole-segment selection validation found "
+        f"{quality.invalid_rows} invalid rows"
     )
 display(quality.asDict())
 display({"geoparquet_columns": geoparquet_roads.columns})
@@ -330,10 +288,10 @@ display({"geoparquet_columns": geoparquet_roads.columns})
 # run, serialises only the final output stage, promotes Spark's part files to
 # `roads.geoparquet`, `roads.csv`, and `boundary.geoparquet`, removes staging
 # metadata, and reads all three objects back. Roads GeoParquet uses the exact
-# source segment schema and native clipped geometry. Every clipped road row is
+# source segment schema, geometry, and bbox values. Every selected road row is
 # written to CSV using the columns in `CSV_EXPORT_COLUMNS`; its default is
 # `road_id`, `source_segment_id`, `road_class`, and quoted `geometry_wkt`.
-# Boundary GeoParquet contains the exact one-row union used by the clipping
+# Boundary GeoParquet contains the exact one-row union used by the selection
 # predicate. Neither explicit mode falls back to the other after a failure.
 
 # %%
@@ -443,7 +401,7 @@ display(
 
 # The 18×12-inch figure is suitable for notebook inspection or local export.
 # It uses no remote basemap and clearly labels the bounded representative
-# sample rather than implying that every clipped feature reached the browser.
+# sample rather than implying that every selected feature reached the browser.
 
 # %%
 import matplotlib.pyplot as plt
@@ -470,7 +428,7 @@ else:
 axis.set_title(
     "Configured regional roads — deterministic bounded display sample\n"
     f"{settings.medium_state_label}; at most "
-    f"{settings.map_feature_limit:,} clipped LineStrings"
+    f"{settings.map_feature_limit:,} whole source LineStrings"
 )
 axis.set_xlabel("longitude")
 axis.set_ylabel("latitude")

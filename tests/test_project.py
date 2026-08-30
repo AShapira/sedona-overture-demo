@@ -706,15 +706,18 @@ class NotebookTests(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_clipped_roads_rebuilds_bbox_in_source_schema_order(self):
+    def test_roads_retain_whole_source_segments_after_exact_filter(self):
         source = (
             ROOT / "notebooks/10_standalone_sedonaspark_clipped_roads.py"
         ).read_text(encoding="utf-8")
-        self.assertIn(
-            'source_bbox_field_names = segments.schema["bbox"].dataType.fieldNames()',
-            source,
-        )
-        self.assertIn("for field_name in source_bbox_field_names", source)
+        self.assertIn("bbox_overlap, exact_intersection", source)
+        self.assertIn("exact_intersection(", source)
+        self.assertIn('F.concat_ws("#", F.col("id"), F.lit(0))', source)
+        self.assertIn("for column in segments.columns", source)
+        self.assertNotIn("ST_Intersection(", source)
+        self.assertNotIn("ST_CollectionExtract(", source)
+        self.assertNotIn("ST_Dump(", source)
+        self.assertNotIn("bbox_expressions", source)
 
     def test_road_6_lesson_is_bounded_offline_and_route_identified(self):
         source = (

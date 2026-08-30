@@ -172,6 +172,8 @@ if [[ "${single_file_total}" -ne 3 || "${single_file_geoparquet}" -ne 1 || "${si
   exit 1
 fi
 single_file_csv_key=$(printf '%s\n' "${single_file_names}" | awk '/\/roads\.csv$/ {print; exit}')
+single_file_geoparquet_key=$(printf '%s\n' "${single_file_names}" | awk '/\/roads\.geoparquet$/ {print; exit}')
+single_file_boundary_key=$(printf '%s\n' "${single_file_names}" | awk '/\/boundary\.geoparquet$/ {print; exit}')
 single_file_csv_rows=$(
   "${container_program}" run --rm --network "${network}" \
     -e MC_HOST_local=http://minioadmin:minioadmin@minio:9000 \
@@ -180,10 +182,48 @@ single_file_csv_rows=$(
     | awk 'END {print NR - 1}'
 )
 if [[ "${single_file_csv_rows}" -ne 2 ]]; then
-  printf 'Expected two clipped CSV rows, found %s.\n' \
+  printf 'Expected two selected CSV rows, found %s.\n' \
     "${single_file_csv_rows}" >&2
   exit 1
 fi
+
+"${container_program}" run --rm --network "${network}" \
+  --security-opt=no-new-privileges \
+  --memory=8g \
+  -e PYTHONPATH=/workspace/src:/opt/spark/python \
+  -e OVERTURE_RELEASE_URI=s3a://overture/release/2026-07-22.0 \
+  -e OVERTURE_RELEASE=2026-07-22.0 \
+  -e REQUIRE_S3_RELEASE=true \
+  -e MEDIUM_STATE_CODES='["AA"]' \
+  -e SMALL_CITIES='[{"name":"Fixture City","state_code":"AA"}]' \
+  -e MEDIUM_SAMPLE_LIMIT=20 \
+  -e SMALL_SAMPLE_LIMIT=10 \
+  -e MAP_FEATURE_LIMIT=5 \
+  -e S3_ENDPOINT=http://minio:9000 \
+  -e S3_REGION=us-east-1 \
+  -e S3_ACCESS_KEY=minioadmin \
+  -e S3_SECRET_KEY=minioadmin \
+  -e S3_PATH_STYLE_ACCESS=true \
+  -e S3_SSL_ENABLED=false \
+  -e WRITE_DERIVED=false \
+  -e SEDONA_SPARK_LOCAL_CORES=2 \
+  -e SEDONA_SPARK_DRIVER_MEMORY=4g \
+  -e SEDONA_SPARK_PARTITIONS=4 \
+  -e SEDONA_SPARK_LOCAL_DIR=/tmp/spark-roads-readback \
+  -e SEDONA_SCRATCH_DIR=/tmp \
+  -e SEDONA_SCRATCH_BUDGET_GB=20 \
+  -e SEDONA_SCRATCH_RESERVE_GB=2 \
+  -e DERIVED_LOCAL_FALLBACK_DIR=/tmp/derived \
+  -e ROAD_OBJECT_URI="s3a://overture/derived/single-file-lab/clipped_roads/${single_file_geoparquet_key}" \
+  -e BOUNDARY_OBJECT_URI="s3a://overture/derived/single-file-lab/clipped_roads/${single_file_boundary_key}" \
+  -v "${project_dir}:/workspace:ro" \
+  -w /workspace \
+  --entrypoint python3 \
+  "${sedona_image}" -c \
+  'import os; from overture_lab.config import load_settings; from overture_lab.spark import create_sedona, read_type; s=load_settings(); spark=create_sedona(s,"whole-road-readback"); roads=spark.read.format("geoparquet").load(os.environ["ROAD_OBJECT_URI"]); boundary=spark.read.format("geoparquet").load(os.environ["BOUNDARY_OBJECT_URI"]); source=read_type(spark,s,"transportation","segment").where("id = '\''crossing-road'\''"); assert {row.id for row in roads.select("id").collect()}=={"inside-road","crossing-road"}; comparison=roads.where("id = '\''crossing-road'\''").alias("road").crossJoin(source.alias("source")).selectExpr("ST_Equals(road.geometry, source.geometry) AS same_geometry", "road.bbox = source.bbox AS same_bbox", "ST_XMin(road.geometry) AS road_xmin").first(); boundary_xmin=boundary.selectExpr("ST_XMin(geometry) AS xmin").first().xmin; assert comparison.same_geometry and comparison.same_bbox, comparison; assert comparison.road_xmin < boundary_xmin and abs(comparison.road_xmin - 33.5) < 1e-9, (comparison, boundary_xmin)' || {
+    printf 'Whole-road GeoParquet read-back validation failed.\n' >&2
+    exit 1
+  }
 
 "${container_program}" run --rm --network "${network}" \
   --security-opt=no-new-privileges \

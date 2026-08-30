@@ -24,7 +24,7 @@ only collect explicitly bounded results for tables or maps.
 | `07_transportation` | Segments, connectors, linear referencing and topology |
 | `08_cross_theme_etl` | Reusable spatial ETL and cross-theme derivation |
 | `09_heavy_visualization` | Safe collection, aggregation, simplification and maps |
-| `10_standalone_sedonaspark_clipped_roads` | Regional road clipping, named S3 exports, large maps |
+| `10_standalone_sedonaspark_clipped_roads` | Regional whole-road selection, named S3 exports, large maps |
 | `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
 | `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
 
@@ -137,6 +137,88 @@ Important variables are documented in `.env.example`. In particular:
   to write explicitly beneath the Compose-mapped
   `DERIVED_LOCAL_FALLBACK_DIR` instead.
 
+### Windows/WSL resource sizing
+
+Resource limits are layered. The lowest applicable limit determines what
+Spark can actually use:
+
+| Layer | Setting | Effect |
+| --- | --- | --- |
+| WSL or Docker Desktop backend | processors and memory | Maximum resources available to the container engine |
+| Compose | `LAB_CONTAINER_CPUS` | Container CPU quota; it does not pin particular CPU cores |
+| Compose | `LAB_CONTAINER_MEMORY` | Total container memory, including JVM, Python, native buffers, and filesystem cache |
+| Spark | `SEDONA_SPARK_LOCAL_CORES` | `local[N]`, the maximum number of concurrent Spark tasks |
+| Spark | `SEDONA_SPARK_DRIVER_MEMORY` | JVM heap only, not total container memory |
+| Spark | `SEDONA_SPARK_PARTITIONS` | Shuffle and explicit repartition task count; normally greater than the Spark core count |
+
+For a Windows workstation with 24 physical cores, 32 logical processors, and
+64 GB RAM, the following is a balanced starting point when most resources may
+be used by the lab. It retains capacity for Windows, WSL services, JVM native
+memory, Python, and the filesystem cache:
+
+```ini
+# %UserProfile%\.wslconfig, when the container engine uses this WSL2 ceiling
+[wsl2]
+memory=48GB
+processors=28
+swap=16GB
+localhostForwarding=true
+```
+
+```dotenv
+LAB_CONTAINER_CPUS=26
+LAB_CONTAINER_MEMORY=44g
+
+SEDONA_SPARK_LOCAL_CORES=24
+SEDONA_SPARK_DRIVER_MEMORY=30g
+SEDONA_SPARK_PARTITIONS=72
+```
+
+Twenty-four Spark task threads approximately match the physical-core count;
+using all 32 logical processors is unlikely to double CPU-heavy Sedona geometry
+throughput. The container receives 26 CPUs so Spark can use 24 while retaining
+some scheduling capacity for Jupyter, JVM garbage collection, and supporting
+processes. Seventy-two partitions provide three task waves per Spark core,
+which helps balance spatial partitions with uneven amounts of work. Notebook
+10 explicitly uses this setting when repartitioning road candidates.
+
+The 30 GB Spark setting is the JVM heap inside a 44 GB container, leaving about
+14 GB for non-heap and native memory. Setting the heap close to the container
+limit can cause the entire container to be OOM-killed instead of producing a
+useful Java heap error. WSL's 48 GB ceiling also leaves roughly 16 GB of the
+64 GB workstation RAM available to Windows.
+
+An aggressive alternative for an otherwise idle workstation is:
+
+```ini
+[wsl2]
+memory=52GB
+processors=30
+swap=16GB
+```
+
+```dotenv
+LAB_CONTAINER_CPUS=28
+LAB_CONTAINER_MEMORY=48g
+
+SEDONA_SPARK_LOCAL_CORES=26
+SEDONA_SPARK_DRIVER_MEMORY=34g
+SEDONA_SPARK_PARTITIONS=96
+```
+
+Use the balanced configuration by default. Adopt the aggressive values only
+after checking Windows responsiveness, container memory, JVM garbage
+collection, task skew, and spill in the Spark UI. Swap is a failure cushion,
+not working memory; sustained swapping means the workload or heap should be
+reduced.
+
+Resource settings are established before the Spark context starts. After
+changing `.wslconfig`, first stop active WSL workloads and then run
+`wsl --shutdown`, which stops all WSL distributions. Recreate the Compose lab
+service and start a fresh notebook kernel after changing any container or
+Spark resource value. The repository's existing defaults remain deliberately
+conservative and are not changed by these recommendations.
+
 For S3-compatible storage, set the endpoint and credentials only in the
 ignored `.env.windows-s3-airgap` file. The Sedona 1.9.0 image already contains
 the Hadoop S3A and AWS SDK jars, so no online dependency download is needed.
@@ -190,10 +272,12 @@ each format through a temporary one-part directory, promotes the part to the
 stable object name, removes Spark metadata, and validates all three objects by
 reading them back. Roads GeoParquet has exactly the original physical
 transportation segment column structure, without the lab-only `theme` and
-`feature_type` labels; each row contains a native clipped LineString and its
-recalculated source-style `bbox`. `boundary.geoparquet` contains the exact
-one-row configured land-country union used for clipping, plus its configured
-state codes. Every clipped road row is also written to CSV. Its columns are
+`feature_type` labels. Exact boundary intersection removes bbox false positives,
+but retained source segments are not clipped: crossing and boundary-touching
+LineStrings keep their complete native geometry and original source `bbox`.
+`boundary.geoparquet` contains the exact one-row configured land-country union
+used for selection, plus its configured state codes. Every selected road row is
+also written to CSV. Its columns are
 controlled by Notebook 10's `CSV_EXPORT_COLUMNS`, which defaults to `road_id`,
 `source_segment_id`, `road_class`, and quoted `geometry_wkt`. This serial
 finalisation is slower than normal parallel Spark output and should be used
