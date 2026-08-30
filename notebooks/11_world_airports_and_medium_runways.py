@@ -61,7 +61,9 @@ display(
         "medium_state_codes": list(settings.medium_state_codes),
         "map_feature_limit": settings.map_feature_limit,
         "write_derived": settings.write_derived,
+        "derived_output_mode": settings.derived_output_mode,
         "derived_output_uri": settings.derived_output_uri,
+        "derived_local_output_dir": settings.derived_local_fallback_dir,
     }
 )
 
@@ -146,10 +148,12 @@ airports.groupBy(F.expr("GeometryType(geometry)").alias("geometry_type")).agg(
 # ## 3. Optionally export one worldwide-airports GeoParquet object
 #
 # With `WRITE_DERIVED=false`, this is a no-write dry run. When enabled,
-# `DERIVED_OUTPUT_URI` is mandatory. The helper creates a unique run prefix,
-# writes one Zstandard GeoParquet 1.1 object named `airports.geoparquet`, and
-# validates the full schema, row count, geometry/SRID, bbox covering metadata,
-# and exact one-object inventory. There is no local fallback.
+# `DERIVED_OUTPUT_MODE=s3` requires `DERIVED_OUTPUT_URI`; explicit `local` mode
+# writes to the mapped `DERIVED_LOCAL_FALLBACK_DIR`. The helper creates a unique
+# run prefix, writes one Zstandard GeoParquet 1.1 object named
+# `airports.geoparquet`, and validates the full schema, row count,
+# geometry/SRID, bbox covering metadata, and exact one-object inventory. The
+# selected target never falls back to the other target after a failure.
 
 # %%
 started = time.perf_counter()
@@ -290,7 +294,7 @@ runways.groupBy(
 # ## 6. Optionally export one configured-region runway GeoParquet object
 #
 # The complete, un-clipped infrastructure rows are written to one named object
-# under a different unique dataset run. The same strict S3-only verification
+# under a different unique dataset run. The same strict selected-target verification
 # contract used for airports applies here.
 
 # %%

@@ -121,8 +121,11 @@ Important variables are documented in `.env.example`. In particular:
   namespaced scratch tree before work begins. Docker bind mounts do not expose
   a portable hard per-directory quota, so the lab never claims this is a
   filesystem-enforced limit and never deletes host scratch automatically.
-- `DERIVED_OUTPUT_URI` is an optional S3A prefix separate from the immutable
-  release. `WRITE_DERIVED` remains false by default.
+- `WRITE_DERIVED` remains false by default. When enabled,
+  `DERIVED_OUTPUT_MODE=s3` is the default and uses `DERIVED_OUTPUT_URI`, an S3A
+  prefix separate from the immutable release. Set `DERIVED_OUTPUT_MODE=local`
+  to write explicitly beneath the Compose-mapped
+  `DERIVED_LOCAL_FALLBACK_DIR` instead.
 
 For S3-compatible storage, set the endpoint and credentials only in the
 ignored `.env.windows-s3-airgap` file. The Sedona 1.9.0 image already contains
@@ -160,24 +163,31 @@ stylesheets, fonts, worker scripts, or public tiles.
 
 Notebook 08 is read-only unless explicitly enabled. It first creates and
 deletes a unique permission marker below the derived prefix. A clean create
-denial may fall back to `/scratch/derived`; cleanup failures or a data write
-that has already started stop immediately and report the partial S3 prefix.
+denial only falls back to the mapped local directory when the legacy
+`ALLOW_LOCAL_DERIVED_FALLBACK=true` switch is explicitly enabled; cleanup
+failures or a data write that has already started stop immediately and report
+the partial S3 prefix.
 Every successful run uses a new directory and is verified by `_SUCCESS` and a
 read-back row count, so no previous derivative is overwritten.
 
-Notebook 10 is likewise read-only unless `WRITE_DERIVED=true`, but its output
-contract is intentionally different: `DERIVED_OUTPUT_URI` is mandatory and
-local fallback is never used. Each successful unique run prefix contains
-exactly `roads.geoparquet` and `roads.csv`. Spark writes each format through a
-temporary one-part directory, promotes the part to the stable object name,
-removes Spark metadata, and validates both objects by reading them back. The
-GeoParquet has exactly the original physical transportation segment column
-structure, without the lab-only `theme` and `feature_type` labels; each row
-contains a native clipped LineString and its recalculated source-style `bbox`.
-The CSV alone adds the export identifiers and is deliberately limited to
-`road_id`, `source_segment_id`, `road_class`, and quoted `geometry_wkt`.
-This serial finalisation is slower than normal parallel Spark output and should
-be used only when downstream consumers require one object per format.
+Notebook 10 is likewise read-only unless `WRITE_DERIVED=true`. Its default
+`DERIVED_OUTPUT_MODE=s3` requires `DERIVED_OUTPUT_URI`; explicit `local` mode
+writes beneath the mapped `DERIVED_LOCAL_FALLBACK_DIR`. Neither selected mode
+falls back to the other after a write or verification failure. Each successful
+unique run prefix contains
+exactly `roads.geoparquet`, `roads.csv`, and `boundary.geoparquet`. Spark writes
+each format through a temporary one-part directory, promotes the part to the
+stable object name, removes Spark metadata, and validates all three objects by
+reading them back. Roads GeoParquet has exactly the original physical
+transportation segment column structure, without the lab-only `theme` and
+`feature_type` labels; each row contains a native clipped LineString and its
+recalculated source-style `bbox`. `boundary.geoparquet` contains the exact
+one-row configured land-country union used for clipping, plus its configured
+state codes. Every clipped road row is also written to CSV. Its columns are
+controlled by Notebook 10's `CSV_EXPORT_COLUMNS`, which defaults to `road_id`,
+`source_segment_id`, `road_class`, and quoted `geometry_wkt`. This serial
+finalisation is slower than normal parallel Spark output and should be used
+only when downstream consumers require one object per format.
 
 Notebook 11 selects worldwide airport-scale Infrastructure features by an
 explicit allowlist of complete-airport classes, excluding related components

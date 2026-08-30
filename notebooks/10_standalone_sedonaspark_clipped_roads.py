@@ -4,15 +4,35 @@
 # **Execution engine:** SedonaSpark.
 # **Inputs:** raw `divisions/division_area` and `transportation/segment`
 # GeoParquet from the configured Overture release.
-# **Outputs:** exactly one `roads.geoparquet` object and one `roads.csv` object
-# below a unique derived S3 run prefix when writing is enabled. GeoParquet has
-# exactly the source segment schema, with clipped native geometry and updated
-# bbox values; CSV contains only the documented subset and geometry as WKT.
+# **Outputs:** exactly one `roads.geoparquet`, one `roads.csv`, and one
+# `boundary.geoparquet` object below a unique derived run prefix when
+# writing is enabled. The roads GeoParquet has exactly the source segment
+# schema, with clipped native geometry and updated bbox values; CSV contains
+# the configured subset and geometry as WKT; boundary GeoParquet contains the
+# one-row configured land-country union used for clipping.
 #
 # This lesson is independent of earlier notebook outputs. It clips broad
 # drivable road classes to the union of the land-country areas named by
 # `MEDIUM_STATE_CODES`. The configured codes are source-data identifiers, not
 # geopolitical assertions.
+#
+# ### Road-class scope
+#
+# Overture's [`Segment` schema](https://docs.overturemaps.org/schema/reference/transportation/segment/)
+# assigns road segments a [`RoadClass`](https://docs.overturemaps.org/schema/reference/transportation/types/road_class/)
+# describing the kind of road and its position in the network hierarchy. The
+# complete schema enum is `motorway`, `primary`, `secondary`, `tertiary`,
+# `residential`, `living_street`, `trunk`, `unclassified`, `service`,
+# `pedestrian`, `footway`, `steps`, `path`, `track`, `cycleway`, `bridleway`,
+# and `unknown`.
+#
+# `ROAD_CLASSES` below is intentionally narrower: it keeps only the ten broad
+# drivable-network classes needed by this lesson. It excludes the
+# pedestrian/non-motorized-focused `pedestrian`, `footway`, `steps`, `path`,
+# `cycleway`, and `bridleway` classes, plus the indeterminate `unknown` class.
+# This is an analytical scope choice, not a claim that every retained segment
+# permits motor vehicles; use `access_restrictions` when actual travel access
+# matters.
 
 # %%
 import math
@@ -42,6 +62,12 @@ ROAD_CLASSES = (
     "service",
     "track",
 )
+CSV_EXPORT_COLUMNS = (
+    "road_id",
+    "source_segment_id",
+    "road_class",
+    "geometry_wkt",
+)
 metrics: list[dict[str, int | float | str]] = []
 
 
@@ -62,12 +88,15 @@ display(
         "release_uri": settings.release_uri,
         "medium_state_codes": list(settings.medium_state_codes),
         "road_classes": list(ROAD_CLASSES),
+        "csv_export_columns": list(CSV_EXPORT_COLUMNS),
         "local_cores": settings.local_cores,
         "driver_memory": settings.driver_memory,
         "shuffle_partitions": settings.shuffle_partitions,
         "map_feature_limit": settings.map_feature_limit,
         "write_derived": settings.write_derived,
+        "derived_output_mode": settings.derived_output_mode,
         "derived_output_uri": settings.derived_output_uri,
+        "derived_local_output_dir": settings.derived_local_fallback_dir,
     }
 )
 
@@ -156,6 +185,18 @@ segments = read_type(spark, settings, "transportation", "segment").drop(
 source_attribute_columns = [
     column for column in segments.columns if column != "geometry"
 ]
+source_bbox_field_names = segments.schema["bbox"].dataType.fieldNames()
+bbox_expressions = {
+    "xmin": F.expr("ST_XMin(geometry)"),
+    "xmax": F.expr("ST_XMax(geometry)"),
+    "ymin": F.expr("ST_YMin(geometry)"),
+    "ymax": F.expr("ST_YMax(geometry)"),
+}
+if set(source_bbox_field_names) != set(bbox_expressions):
+    raise RuntimeError(
+        "Source bbox fields differ from the expected coordinate axes: "
+        f"{source_bbox_field_names}"
+    )
 candidates = (
     bbox_overlap(
         segments.where(
@@ -215,10 +256,10 @@ roads = (
         "part_number",
         *[
             F.struct(
-                F.expr("ST_XMin(geometry)").alias("xmin"),
-                F.expr("ST_YMin(geometry)").alias("ymin"),
-                F.expr("ST_XMax(geometry)").alias("xmax"),
-                F.expr("ST_YMax(geometry)").alias("ymax"),
+                *[
+                    bbox_expressions[field_name].alias(field_name)
+                    for field_name in source_bbox_field_names
+                ]
             ).alias("bbox")
             if column == "bbox"
             else F.col(column)
@@ -280,28 +321,38 @@ display(quality.asDict())
 display({"geoparquet_columns": geoparquet_roads.columns})
 
 # %% [markdown]
-# ## 4. Optionally write exactly two named S3 objects
+# ## 4. Optionally write exactly three named output objects
 #
 # `WRITE_DERIVED=false` keeps this cell read-only. When enabled, the writer
-# probes `DERIVED_OUTPUT_URI`, creates a unique run, serialises only the final
-# output stage, promotes Spark's part files to `roads.geoparquet` and
-# `roads.csv`, removes staging metadata, and reads both objects back. GeoParquet
-# uses the exact source segment schema and native clipped geometry. CSV is
-# restricted to `road_id`, `source_segment_id`, `road_class`, and quoted
-# `geometry_wkt`. A denied probe or partial write never falls back to local
-# storage.
+# uses `DERIVED_OUTPUT_MODE=s3` by default and requires a writable
+# `DERIVED_OUTPUT_URI`. Set `DERIVED_OUTPUT_MODE=local` to write explicitly to
+# the Compose-mapped `DERIVED_LOCAL_FALLBACK_DIR`. Each mode creates a unique
+# run, serialises only the final output stage, promotes Spark's part files to
+# `roads.geoparquet`, `roads.csv`, and `boundary.geoparquet`, removes staging
+# metadata, and reads all three objects back. Roads GeoParquet uses the exact
+# source segment schema and native clipped geometry. Every clipped road row is
+# written to CSV using the columns in `CSV_EXPORT_COLUMNS`; its default is
+# `road_id`, `source_segment_id`, `road_class`, and quoted `geometry_wkt`.
+# Boundary GeoParquet contains the exact one-row union used by the clipping
+# predicate. Neither explicit mode falls back to the other after a failure.
 
 # %%
 started = time.perf_counter()
+boundary_export = boundary.select(
+    F.lit(",".join(settings.medium_state_codes)).alias("state_codes"),
+    F.col("boundary_geometry").alias("geometry"),
+)
 export_result = write_single_file_exports(
     roads,
     spark,
     settings,
     dataset_name="clipped_roads",
     geoparquet_dataframe=geoparquet_roads,
+    boundary_dataframe=boundary_export,
+    csv_columns=CSV_EXPORT_COLUMNS,
 )
 if export_result.status == "written":
-    record_metric("single-file S3 exports", road_count, started)
+    record_metric("single-file configured-target exports", road_count, started)
 display(export_result.as_dict())
 
 # %% [markdown]
@@ -497,7 +548,7 @@ offline_deck_display(deck)
 # ## Performance summary
 #
 # These action timings depend on the selected region, release, resources, S3
-# implementation, and object sizes. The two single-file exports are expected
+# implementation, and object sizes. The three single-file exports are expected
 # to be slower than normal parallel Spark output because each final format is
 # intentionally reduced to one object.
 

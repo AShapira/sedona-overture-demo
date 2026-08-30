@@ -165,8 +165,9 @@ single_file_names=$(printf '%s\n' "${single_file_listing}" | awk '{print $NF}')
 single_file_total=$(printf '%s\n' "${single_file_names}" | awk 'NF {count++} END {print count + 0}')
 single_file_geoparquet=$(printf '%s\n' "${single_file_names}" | awk '/\/roads\.geoparquet$/ {count++} END {print count + 0}')
 single_file_csv=$(printf '%s\n' "${single_file_names}" | awk '/\/roads\.csv$/ {count++} END {print count + 0}')
-if [[ "${single_file_total}" -ne 2 || "${single_file_geoparquet}" -ne 1 || "${single_file_csv}" -ne 1 ]]; then
-  printf 'Expected exactly roads.geoparquet and roads.csv; found:\n%s\n' \
+single_file_boundary=$(printf '%s\n' "${single_file_names}" | awk '/\/boundary\.geoparquet$/ {count++} END {print count + 0}')
+if [[ "${single_file_total}" -ne 3 || "${single_file_geoparquet}" -ne 1 || "${single_file_csv}" -ne 1 || "${single_file_boundary}" -ne 1 ]]; then
+  printf 'Expected exactly roads.geoparquet, roads.csv, and boundary.geoparquet; found:\n%s\n' \
     "${single_file_names}" >&2
   exit 1
 fi
@@ -305,6 +306,42 @@ fi
   --entrypoint python3 \
   "${sedona_image}" -c \
   'from pyspark.sql import functions as F; from overture_lab.config import load_settings; from overture_lab.outputs import write_single_file_exports, write_single_geoparquet; from overture_lab.spark import create_sedona, read_type; s=load_settings(); assert s.storage_mode=="local"; spark=create_sedona(s,"local-input-s3-output-smoke"); segment=read_type(spark,s,"transportation","segment").where(F.col("id")=="inside-road"); df=segment.select(F.concat_ws("#",F.col("id"),F.lit(0)).alias("road_id"),F.col("id").alias("source_segment_id"),F.col("class").alias("road_class"),F.expr("ST_SetSRID(geometry, 4326)").alias("geometry")); result=write_single_file_exports(df,spark,s,dataset_name="local_input_roads",geoparquet_dataframe=segment); assert result.row_count==1 and result.geoparquet_uri.startswith("s3a://"), result; raw=read_type(spark,s,"places","place"); airport=raw.where(F.col("basic_category")=="airport").select(*[F.expr("ST_SetSRID(geometry, 4326)").alias("geometry") if name=="geometry" else F.col(name) for name in raw.columns]); geo_result=write_single_geoparquet(airport,spark,s,dataset_name="local_input_airports",object_name="airports.geoparquet"); assert geo_result.row_count==2 and geo_result.geoparquet_uri.startswith("s3a://"), geo_result'
+
+"${container_program}" run --rm \
+  --security-opt=no-new-privileges \
+  --memory=8g \
+  -e PYTHONPATH=/workspace/src:/opt/spark/python \
+  -e OVERTURE_RELEASE_URI=/fixture/release \
+  -e OVERTURE_RELEASE=2026-07-22.0 \
+  -e MEDIUM_STATE_CODES='["AA"]' \
+  -e SMALL_CITIES='[{"name":"Fixture City","state_code":"AA"}]' \
+  -e MEDIUM_SAMPLE_LIMIT=20 \
+  -e SMALL_SAMPLE_LIMIT=10 \
+  -e MAP_FEATURE_LIMIT=5 \
+  -e WRITE_DERIVED=true \
+  -e DERIVED_OUTPUT_MODE=local \
+  -e ALLOW_LOCAL_DERIVED_FALLBACK=false \
+  -e SEDONA_SPARK_LOCAL_CORES=2 \
+  -e SEDONA_SPARK_DRIVER_MEMORY=4g \
+  -e SEDONA_SPARK_PARTITIONS=4 \
+  -e SEDONA_SPARK_LOCAL_DIR=/scratch/spark-explicit-local \
+  -e SEDONA_SCRATCH_DIR=/scratch \
+  -e SEDONA_SCRATCH_BUDGET_GB=20 \
+  -e SEDONA_SCRATCH_RESERVE_GB=2 \
+  -e DERIVED_LOCAL_FALLBACK_DIR=/scratch/explicit-local \
+  -v "${project_dir}:/workspace:ro" \
+  -v "${fixture_dir}/scratch:/scratch" \
+  -w /workspace \
+  --entrypoint python3 \
+  "${sedona_image}" -c \
+  'from overture_lab.config import load_settings; from overture_lab.outputs import write_single_file_exports; from overture_lab.spark import create_sedona; s=load_settings(); assert s.derived_output_mode=="local"; spark=create_sedona(s,"explicit-local-single-file-smoke"); df=spark.sql("SELECT '\''road#0'\'' AS road_id, '\''road'\'' AS source_segment_id, '\''primary'\'' AS road_class, ST_SetSRID(ST_GeomFromWKT('\''LINESTRING (34.2 32.2, 34.8 32.8)'\''), 4326) AS geometry"); geoparquet_df=df.selectExpr("source_segment_id AS id", "CAST(struct(34.2D AS xmin, 34.8D AS xmax, 32.2D AS ymin, 32.8D AS ymax) AS STRUCT<xmin: DOUBLE, xmax: DOUBLE, ymin: DOUBLE, ymax: DOUBLE>) AS bbox", "geometry"); boundary=spark.sql("SELECT '\''AA'\'' AS state_codes, ST_SetSRID(ST_GeomFromWKT('\''POLYGON ((34 32, 35 32, 35 33, 34 33, 34 32))'\''), 4326) AS geometry"); result=write_single_file_exports(df,spark,s,dataset_name="explicit_local_roads",geoparquet_dataframe=geoparquet_df,boundary_dataframe=boundary); assert result.row_count==1 and result.run_prefix.startswith("/scratch/explicit-local/"), result; assert result.geoparquet_uri.startswith("/scratch/explicit-local/") and result.csv_uri.startswith("/scratch/explicit-local/") and result.boundary_geoparquet_uri.startswith("/scratch/explicit-local/"), result'
+
+explicit_local_files=$(find "${fixture_dir}/scratch/explicit-local" -type f -printf '%f\n' | sort)
+if [[ "${explicit_local_files}" != $'boundary.geoparquet\nroads.csv\nroads.geoparquet' ]]; then
+  printf 'Explicit local output inventory is incorrect:\n%s\n' \
+    "${explicit_local_files}" >&2
+  exit 1
+fi
 
 "${container_program}" run --rm --network "${network}" \
   --security-opt=no-new-privileges \

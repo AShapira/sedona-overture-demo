@@ -41,6 +41,7 @@ class SingleFileExportResult:
     run_prefix: str | None
     geoparquet_uri: str | None
     csv_uri: str | None
+    boundary_geoparquet_uri: str | None
     row_count: int | None
     detail: str
 
@@ -151,15 +152,21 @@ def _single_file_run_prefix(
     *,
     run_id: str | None = None,
 ) -> str:
-    if not settings.derived_output_uri:
-        raise ValueError(
-            "Single-file S3 exports require DERIVED_OUTPUT_URI"
-        )
     safe_dataset = _safe_component(dataset_name)
     release = _safe_component(settings.release)
     actual_run_id = _safe_component(run_id or _run_id())
+    if settings.derived_output_mode == "s3":
+        if not settings.derived_output_uri:
+            raise ValueError(
+                "Single-file S3 exports require DERIVED_OUTPUT_URI"
+            )
+        root = settings.derived_output_uri.rstrip("/")
+    else:
+        root_path = Path(settings.derived_local_fallback_dir)
+        root_path.mkdir(parents=True, exist_ok=True)
+        root = str(root_path)
     return (
-        f"{settings.derived_output_uri.rstrip('/')}/{safe_dataset}/"
+        f"{root}/{safe_dataset}/"
         f"release={release}/run={actual_run_id}"
     )
 
@@ -222,8 +229,16 @@ def _promote_single_part(
         )
     if not filesystem.exists(destination):
         raise RuntimeError(
-            f"Promoted S3 object is missing after rename: {destination_uri}"
+            f"Promoted output object is missing after rename: {destination_uri}"
         )
+
+
+def _remove_local_checksum_sidecars(*destination_uris: str) -> None:
+    """Remove Hadoop LocalFileSystem CRC files after verified promotion."""
+    for destination_uri in destination_uris:
+        destination = Path(destination_uri)
+        checksum = destination.parent / f".{destination.name}.crc"
+        checksum.unlink(missing_ok=True)
 
 
 def _geoparquet_metadata(spark, geoparquet_uri: str) -> dict[str, object]:
@@ -257,6 +272,7 @@ def _verify_single_geoparquet(
     object_name: str,
     expected_rows: int,
     expected_schema: tuple[tuple[str, str], ...],
+    expected_object_names: tuple[str, ...] | None = None,
 ) -> None:
     from pyspark.sql import functions as F
 
@@ -338,9 +354,10 @@ def _verify_single_geoparquet(
         for status in filesystem.listStatus(run)
         if status.isFile()
     )
-    if names != [object_name]:
+    expected_names = sorted(expected_object_names or (object_name,))
+    if names != expected_names:
         raise RuntimeError(
-            f"Expected exactly {[object_name]} at {run_prefix}, found {names}"
+            f"Expected exactly {expected_names} at {run_prefix}, found {names}"
         )
 
 
@@ -352,7 +369,7 @@ def write_single_geoparquet(
     dataset_name: str,
     object_name: str,
 ) -> SingleGeoParquetExportResult:
-    """Write and verify one named GeoParquet 1.1 object in a unique S3 run."""
+    """Write and verify one named GeoParquet 1.1 object in a unique run."""
     if "geometry" not in dataframe.columns:
         raise ValueError("Single GeoParquet export requires a geometry column")
     if "geometry_bbox" in dataframe.columns:
@@ -372,20 +389,25 @@ def write_single_geoparquet(
             geoparquet_uri=None,
             row_count=None,
             detail=(
-                "Set WRITE_DERIVED=true and DERIVED_OUTPUT_URI to write the "
-                "single-file S3 export."
+                "Set WRITE_DERIVED=true to write the configured single-file "
+                "output."
             ),
         )
-    if not settings.derived_output_uri:
+    if settings.derived_output_mode == "s3" and not settings.derived_output_uri:
         raise ValueError(
             "WRITE_DERIVED=true single GeoParquet exports require "
             "DERIVED_OUTPUT_URI"
         )
-    if not _s3_permission_probe(spark, settings.derived_output_uri):
+    if (
+        settings.derived_output_mode == "s3"
+        and not _s3_permission_probe(spark, settings.derived_output_uri)
+    ):
         raise RuntimeError(
             "The configured DERIVED_OUTPUT_URI denied the clean S3 write probe; "
             "single GeoParquet exports do not use local fallback"
         )
+    if settings.derived_output_mode == "local":
+        scratch_status(settings)
 
     run_prefix = _single_file_run_prefix(settings, dataset_name)
     geoparquet_uri = f"{run_prefix}/{object_name}"
@@ -414,17 +436,24 @@ def write_single_geoparquet(
                 for field in dataframe.schema.fields
             ),
         )
+        if settings.derived_output_mode == "local":
+            _remove_local_checksum_sidecars(geoparquet_uri)
     except Exception as exc:
         raise RuntimeError(
-            "Single GeoParquet S3 export started but did not verify. No local "
+            "Single GeoParquet output started but did not verify. No target "
             f"fallback was attempted; inspect partial prefix {run_prefix}"
         ) from exc
+    if settings.derived_output_mode == "local":
+        scratch_status(settings)
     return SingleGeoParquetExportResult(
         status="written",
         run_prefix=run_prefix,
         geoparquet_uri=geoparquet_uri,
         row_count=row_count,
-        detail="One named S3 object and its read-back validation succeeded.",
+        detail=(
+            f"One named {settings.derived_output_mode} object and its read-back "
+            "validation succeeded."
+        ),
     )
 
 
@@ -434,8 +463,11 @@ def _verify_single_file_exports(
     run_prefix: str,
     geoparquet_uri: str,
     csv_uri: str,
+    boundary_geoparquet_uri: str | None,
     expected_rows: int,
     expected_geoparquet_schema: tuple[tuple[str, str], ...],
+    expected_boundary_schema: tuple[tuple[str, str], ...] | None,
+    expected_csv_columns: tuple[str, ...],
 ) -> None:
     from pyspark.sql import functions as F
 
@@ -509,32 +541,29 @@ def _verify_single_file_exports(
             "as the geometry covering"
         )
 
-    csv_frame = (
-        spark.read.option("header", "true")
-        .csv(csv_uri)
-    )
-    if tuple(csv_frame.columns) != SINGLE_FILE_CSV_COLUMNS:
+    csv_frame = spark.read.option("header", "true").csv(csv_uri)
+    if tuple(csv_frame.columns) != expected_csv_columns:
         raise RuntimeError(
             "CSV read-back columns do not match the defined subset: expected "
-            f"{list(SINGLE_FILE_CSV_COLUMNS)}, found {csv_frame.columns}"
+            f"{list(expected_csv_columns)}, found {csv_frame.columns}"
         )
+    identity_null = F.lit(False)
+    for name in ("road_id", "source_segment_id", "road_class"):
+        if name in expected_csv_columns:
+            identity_null = identity_null | F.col(name).isNull()
     csv_validation = csv_frame.select(
-        *SINGLE_FILE_CSV_COLUMNS,
+        *expected_csv_columns,
         F.expr("ST_GeomFromWKT(geometry_wkt)").alias("parsed_geometry"),
     ).agg(
         F.count("*").alias("row_count"),
         F.sum(
             F.when(
-                F.expr(
-                    "road_id IS NULL "
-                    "OR source_segment_id IS NULL "
-                    "OR road_class IS NULL "
-                    "OR geometry_wkt IS NULL "
-                    "OR parsed_geometry IS NULL "
-                    "OR ST_IsEmpty(parsed_geometry) "
-                    "OR NOT ST_IsValid(parsed_geometry) "
-                    "OR GeometryType(parsed_geometry) <> 'LINESTRING'"
-                ),
+                F.col("geometry_wkt").isNull()
+                | F.col("parsed_geometry").isNull()
+                | F.expr("ST_IsEmpty(parsed_geometry)")
+                | ~F.expr("ST_IsValid(parsed_geometry)")
+                | (F.expr("GeometryType(parsed_geometry)") != "LINESTRING")
+                | identity_null,
                 1,
             ).otherwise(0)
         ).alias("invalid_rows"),
@@ -549,6 +578,21 @@ def _verify_single_file_exports(
             f"CSV read-back contains {csv_validation.invalid_rows} invalid rows"
         )
 
+    expected_names = ["roads.csv", "roads.geoparquet"]
+    if boundary_geoparquet_uri is not None:
+        if expected_boundary_schema is None:
+            raise RuntimeError("Boundary GeoParquet validation schema is missing")
+        expected_names.append("boundary.geoparquet")
+        _verify_single_geoparquet(
+            spark,
+            run_prefix=run_prefix,
+            geoparquet_uri=boundary_geoparquet_uri,
+            object_name="boundary.geoparquet",
+            expected_rows=1,
+            expected_schema=expected_boundary_schema,
+            expected_object_names=tuple(expected_names),
+        )
+
     run = spark._jvm.org.apache.hadoop.fs.Path(run_prefix)
     filesystem = run.getFileSystem(spark._jsc.hadoopConfiguration())
     names = sorted(
@@ -556,11 +600,56 @@ def _verify_single_file_exports(
         for status in filesystem.listStatus(run)
         if status.isFile()
     )
-    expected_names = ["roads.csv", "roads.geoparquet"]
+    expected_names = sorted(expected_names)
     if names != expected_names:
         raise RuntimeError(
             f"Expected exactly {expected_names} at {run_prefix}, found {names}"
         )
+
+
+def _normalise_road_csv_columns(
+    dataframe,
+    csv_columns: tuple[str, ...],
+) -> tuple[str, ...]:
+    if not isinstance(csv_columns, tuple) or not csv_columns:
+        raise ValueError("csv_columns must be a non-empty tuple")
+    if any(not isinstance(name, str) or not name for name in csv_columns):
+        raise ValueError("csv_columns entries must be non-empty strings")
+    if len(set(csv_columns)) != len(csv_columns):
+        raise ValueError("csv_columns must not contain duplicates")
+    if "geometry_wkt" not in csv_columns:
+        raise ValueError("csv_columns must include geometry_wkt")
+    if "geometry" in csv_columns:
+        raise ValueError("Use geometry_wkt instead of geometry in csv_columns")
+    missing = set(csv_columns) - set(dataframe.columns) - {"geometry_wkt"}
+    if missing:
+        raise ValueError(
+            f"CSV export requested unavailable columns: {sorted(missing)}"
+        )
+    schema = getattr(dataframe, "schema", None)
+    if schema is not None:
+        unsupported_type_names = {
+            "array",
+            "binary",
+            "calendarinterval",
+            "daytimeinterval",
+            "map",
+            "struct",
+            "variant",
+            "yearmonthinterval",
+        }
+        unsupported = [
+            name
+            for name in csv_columns
+            if name != "geometry_wkt"
+            and schema[name].dataType.typeName() in unsupported_type_names
+        ]
+        if unsupported:
+            raise ValueError(
+                "CSV export columns must be scalar values; unsupported: "
+                f"{unsupported}"
+            )
+    return csv_columns
 
 
 def write_single_file_exports(
@@ -570,8 +659,10 @@ def write_single_file_exports(
     *,
     dataset_name: str,
     geoparquet_dataframe,
+    boundary_dataframe=None,
+    csv_columns: tuple[str, ...] = SINGLE_FILE_CSV_COLUMNS,
 ) -> SingleFileExportResult:
-    """Write source-schema GeoParquet and subset WKT CSV to a unique S3 run."""
+    """Write road GeoParquet, configurable WKT CSV, and optional boundary."""
     required_columns = {
         "road_id",
         "source_segment_id",
@@ -594,33 +685,52 @@ def write_single_file_exports(
         raise ValueError(
             "Road GeoParquet must use the source bbox column, not geometry_bbox"
         )
+    if boundary_dataframe is not None:
+        if "geometry" not in boundary_dataframe.columns:
+            raise ValueError("Boundary GeoParquet export requires geometry")
+        if "geometry_bbox" in boundary_dataframe.columns:
+            raise ValueError(
+                "geometry_bbox is reserved for the boundary covering column"
+            )
+    csv_columns = _normalise_road_csv_columns(dataframe, csv_columns)
     if not settings.write_derived:
         return SingleFileExportResult(
             status="dry-run",
             run_prefix=None,
             geoparquet_uri=None,
             csv_uri=None,
+            boundary_geoparquet_uri=None,
             row_count=None,
             detail=(
-                "Set WRITE_DERIVED=true and DERIVED_OUTPUT_URI to write the "
-                "single-file S3 exports."
+                "Set WRITE_DERIVED=true to write the configured single-file "
+                "outputs."
             ),
         )
-    if not settings.derived_output_uri:
+    if settings.derived_output_mode == "s3" and not settings.derived_output_uri:
         raise ValueError(
             "WRITE_DERIVED=true single-file exports require DERIVED_OUTPUT_URI"
         )
-    if not _s3_permission_probe(spark, settings.derived_output_uri):
+    if (
+        settings.derived_output_mode == "s3"
+        and not _s3_permission_probe(spark, settings.derived_output_uri)
+    ):
         raise RuntimeError(
             "The configured DERIVED_OUTPUT_URI denied the clean S3 write probe; "
             "single-file exports do not use local fallback"
         )
+    if settings.derived_output_mode == "local":
+        scratch_status(settings)
 
     from pyspark.sql import functions as F
 
     run_prefix = _single_file_run_prefix(settings, dataset_name)
     geoparquet_uri = f"{run_prefix}/roads.geoparquet"
     csv_uri = f"{run_prefix}/roads.csv"
+    boundary_geoparquet_uri = (
+        f"{run_prefix}/boundary.geoparquet"
+        if boundary_dataframe is not None
+        else None
+    )
     row_count = dataframe.count()
     geoparquet_row_count = geoparquet_dataframe.count()
     if geoparquet_row_count != row_count:
@@ -629,10 +739,12 @@ def write_single_file_exports(
             f"{geoparquet_row_count} versus {row_count}"
         )
     csv_frame = dataframe.select(
-        "road_id",
-        "source_segment_id",
-        "road_class",
-        F.expr("ST_AsText(geometry)").alias("geometry_wkt"),
+        *[
+            F.expr("ST_AsText(geometry)").alias("geometry_wkt")
+            if name == "geometry_wkt"
+            else F.col(name)
+            for name in csv_columns
+        ]
     )
     try:
         _promote_single_part(
@@ -655,29 +767,73 @@ def write_single_file_exports(
             output_format="csv",
             options={"header": "true", "quoteAll": "true"},
         )
+        if boundary_dataframe is not None:
+            _promote_single_part(
+                boundary_dataframe,
+                spark,
+                staging_uri=f"{run_prefix}/._boundary_staging",
+                destination_uri=boundary_geoparquet_uri,
+                output_format="geoparquet",
+                options={
+                    "compression": "zstd",
+                    "geoparquet.version": "1.1.0",
+                    "geoparquet.covering.mode": "auto",
+                },
+            )
         _verify_single_file_exports(
             spark,
             run_prefix=run_prefix,
             geoparquet_uri=geoparquet_uri,
             csv_uri=csv_uri,
+            boundary_geoparquet_uri=boundary_geoparquet_uri,
             expected_rows=row_count,
             expected_geoparquet_schema=tuple(
                 (field.name, field.dataType.json())
                 for field in geoparquet_dataframe.schema.fields
             ),
+            expected_boundary_schema=(
+                tuple(
+                    (field.name, field.dataType.json())
+                    for field in boundary_dataframe.schema.fields
+                )
+                if boundary_dataframe is not None
+                else None
+            ),
+            expected_csv_columns=csv_columns,
         )
+        if settings.derived_output_mode == "local":
+            _remove_local_checksum_sidecars(
+                geoparquet_uri,
+                csv_uri,
+                *(
+                    (boundary_geoparquet_uri,)
+                    if boundary_geoparquet_uri is not None
+                    else ()
+                ),
+            )
     except Exception as exc:
         raise RuntimeError(
-            "Single-file S3 export started but did not verify. No local "
-            f"fallback was attempted; inspect partial prefix {run_prefix}"
+            "Single-file output started but did not verify. No target fallback "
+            f"was attempted; inspect partial prefix {run_prefix}"
         ) from exc
+    if settings.derived_output_mode == "local":
+        scratch_status(settings)
     return SingleFileExportResult(
         status="written",
         run_prefix=run_prefix,
         geoparquet_uri=geoparquet_uri,
         csv_uri=csv_uri,
+        boundary_geoparquet_uri=boundary_geoparquet_uri,
         row_count=row_count,
-        detail="Two named S3 objects and both read-back validations succeeded.",
+        detail=(
+            f"Three named {settings.derived_output_mode} objects and all "
+            "read-back validations succeeded."
+            if boundary_dataframe is not None
+            else (
+                f"Two named {settings.derived_output_mode} objects and both "
+                "read-back validations succeeded."
+            )
+        ),
     )
 
 
@@ -688,12 +844,16 @@ def write_derived(
     *,
     dataset_name: str,
 ) -> DerivedWriteResult:
-    """Write one new run, preferring S3 and falling back only before data write."""
+    """Write one run to the selected target, with legacy S3 probe fallback."""
     safe_dataset = _safe_component(dataset_name)
     if not settings.write_derived:
         return DerivedWriteResult(
             status="dry-run",
-            destination=settings.derived_output_uri,
+            destination=(
+                settings.derived_output_uri
+                if settings.derived_output_mode == "s3"
+                else settings.derived_local_fallback_dir
+            ),
             row_count=None,
             used_local_fallback=False,
             detail="Set WRITE_DERIVED=true to write a bounded derivative.",
@@ -702,10 +862,6 @@ def write_derived(
     run_id = _run_id()
     release = _safe_component(settings.release)
     relative = f"{safe_dataset}/release={release}/run={run_id}"
-    can_write_s3 = False
-    if settings.derived_output_uri:
-        can_write_s3 = _s3_permission_probe(spark, settings.derived_output_uri)
-
     row_count = dataframe.count()
     manifest = {
         "dataset": safe_dataset,
@@ -714,6 +870,30 @@ def write_derived(
         "run_id": run_id,
         "row_count": row_count,
     }
+
+    if settings.derived_output_mode == "local":
+        scratch_status(settings)
+        destination_path = Path(settings.derived_local_fallback_dir) / relative
+        destination_path.parent.mkdir(parents=True, exist_ok=True)
+        destination = str(destination_path)
+        dataframe.write.mode("errorifexists").format("geoparquet").save(
+            destination
+        )
+        _verify_spark_output(spark, destination, row_count)
+        manifest["output_mode"] = "local"
+        _write_local_manifest(destination_path, manifest)
+        scratch_status(settings)
+        return DerivedWriteResult(
+            status="written",
+            destination=destination,
+            row_count=row_count,
+            used_local_fallback=False,
+            detail="Explicit local output and read-back row count verified.",
+        )
+
+    can_write_s3 = False
+    if settings.derived_output_uri:
+        can_write_s3 = _s3_permission_probe(spark, settings.derived_output_uri)
 
     if settings.derived_output_uri:
         if can_write_s3:

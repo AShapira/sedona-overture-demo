@@ -262,6 +262,48 @@ class ConfigurationTests(unittest.TestCase):
             settings = load_settings()
         self.assertEqual(settings.storage_mode, "s3a")
 
+    def test_derived_output_mode_defaults_to_s3_and_rejects_unknown_values(self):
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+            self.assertEqual(settings.derived_output_mode, "s3")
+            self.assertFalse(settings.allow_local_derived_fallback)
+        with patch.dict(
+            os.environ,
+            test_environment(DERIVED_OUTPUT_MODE="filesystem"),
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ValueError, "must be s3 or local"):
+                load_settings()
+
+    def test_explicit_local_output_uses_the_mapped_derived_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            environment = test_environment(**{
+                "WRITE_DERIVED": "true",
+                "DERIVED_OUTPUT_MODE": "local",
+                "ALLOW_LOCAL_DERIVED_FALLBACK": "false",
+                "SEDONA_SCRATCH_DIR": directory,
+                "DERIVED_LOCAL_FALLBACK_DIR": str(root / "derived"),
+                "SEDONA_SCRATCH_RESERVE_GB": "0",
+            })
+            with patch.dict(os.environ, environment, clear=True):
+                settings = load_settings()
+            prefix = _single_file_run_prefix(
+                settings,
+                "Clipped roads",
+                run_id="fixed-run",
+            )
+        self.assertEqual(
+            prefix,
+            str(
+                root
+                / "derived"
+                / "Clipped-roads"
+                / "release=2026-07-22.0"
+                / "run=fixed-run"
+            ),
+        )
+
     def test_scratch_status_reports_namespaced_usage(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -305,42 +347,25 @@ class ConfigurationTests(unittest.TestCase):
                 (),
                 {"columns": ["id", "bbox", "geometry"]},
             )(),
+            boundary_dataframe=type(
+                "BoundaryFrame",
+                (),
+                {"columns": ["state_codes", "geometry"]},
+            )(),
         )
         self.assertEqual(result.status, "dry-run")
         self.assertIsNone(result.run_prefix)
+        self.assertIsNone(result.boundary_geoparquet_uri)
         self.assertIsNone(result.row_count)
 
     def test_single_file_export_requires_s3_destination_when_enabled(self):
-        dataframe = type(
-            "RoadFrame",
-            (),
-            {
-                "columns": [
-                    "road_id",
-                    "source_segment_id",
-                    "road_class",
-                    "geometry",
-                ]
-            },
-        )()
         with patch.dict(
             os.environ,
             test_environment(WRITE_DERIVED="true"),
             clear=True,
         ):
-            settings = load_settings()
-        with self.assertRaisesRegex(ValueError, "require DERIVED_OUTPUT_URI"):
-            write_single_file_exports(
-                dataframe,
-                None,
-                settings,
-                dataset_name="clipped_roads",
-                geoparquet_dataframe=type(
-                    "SegmentFrame",
-                    (),
-                    {"columns": ["id", "bbox", "geometry"]},
-                )(),
-            )
+            with self.assertRaisesRegex(ValueError, "requires DERIVED_OUTPUT_URI"):
+                load_settings()
 
     def test_single_file_paths_and_csv_schema_are_stable(self):
         with patch.dict(
@@ -388,6 +413,85 @@ class ConfigurationTests(unittest.TestCase):
                 )(),
             )
 
+    def test_single_file_csv_columns_are_configurable_and_validated(self):
+        dataframe = type(
+            "RoadFrame",
+            (),
+            {
+                "columns": [
+                    "road_id",
+                    "source_segment_id",
+                    "road_class",
+                    "version",
+                    "geometry",
+                ]
+            },
+        )()
+        geoparquet = type(
+            "SegmentFrame",
+            (),
+            {"columns": ["id", "bbox", "geometry"]},
+        )()
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+        result = write_single_file_exports(
+            dataframe,
+            None,
+            settings,
+            dataset_name="clipped_roads",
+            geoparquet_dataframe=geoparquet,
+            csv_columns=("source_segment_id", "version", "geometry_wkt"),
+        )
+        self.assertEqual(result.status, "dry-run")
+        for csv_columns, message in (
+            (("road_id",), "include geometry_wkt"),
+            (("geometry_wkt", "geometry_wkt"), "duplicates"),
+            (("missing", "geometry_wkt"), "unavailable"),
+            (("geometry", "geometry_wkt"), "instead of geometry"),
+        ):
+            with self.subTest(csv_columns=csv_columns):
+                with self.assertRaisesRegex(ValueError, message):
+                    write_single_file_exports(
+                        dataframe,
+                        None,
+                        settings,
+                        dataset_name="clipped_roads",
+                        geoparquet_dataframe=geoparquet,
+                        csv_columns=csv_columns,
+                    )
+
+    def test_single_file_boundary_requires_geometry(self):
+        dataframe = type(
+            "RoadFrame",
+            (),
+            {
+                "columns": [
+                    "road_id",
+                    "source_segment_id",
+                    "road_class",
+                    "geometry",
+                ]
+            },
+        )()
+        geoparquet = type(
+            "SegmentFrame",
+            (),
+            {"columns": ["id", "bbox", "geometry"]},
+        )()
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+        with self.assertRaisesRegex(ValueError, "requires geometry"):
+            write_single_file_exports(
+                dataframe,
+                None,
+                settings,
+                dataset_name="clipped_roads",
+                geoparquet_dataframe=geoparquet,
+                boundary_dataframe=type(
+                    "BoundaryFrame", (), {"columns": ["state_codes"]}
+                )(),
+            )
+
     def test_single_geoparquet_result_contract(self):
         result = SingleGeoParquetExportResult(
             status="written",
@@ -430,23 +534,13 @@ class ConfigurationTests(unittest.TestCase):
         self.assertIsNone(result.row_count)
 
     def test_single_geoparquet_requires_s3_destination_when_enabled(self):
-        dataframe = type(
-            "AirportFrame", (), {"columns": ["id", "geometry"]}
-        )()
         with patch.dict(
             os.environ,
             test_environment(WRITE_DERIVED="true"),
             clear=True,
         ):
-            settings = load_settings()
-        with self.assertRaisesRegex(ValueError, "require DERIVED_OUTPUT_URI"):
-            write_single_geoparquet(
-                dataframe,
-                None,
-                settings,
-                dataset_name="world_airports",
-                object_name="airports.geoparquet",
-            )
+            with self.assertRaisesRegex(ValueError, "requires DERIVED_OUTPUT_URI"):
+                load_settings()
 
     def test_single_geoparquet_rejects_reserved_or_unsafe_columns_and_names(self):
         with patch.dict(os.environ, test_environment(), clear=True):
@@ -606,6 +700,16 @@ class NotebookTests(unittest.TestCase):
             check=False,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_clipped_roads_rebuilds_bbox_in_source_schema_order(self):
+        source = (
+            ROOT / "notebooks/10_standalone_sedonaspark_clipped_roads.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'source_bbox_field_names = segments.schema["bbox"].dataType.fieldNames()',
+            source,
+        )
+        self.assertIn("for field_name in source_bbox_field_names", source)
 
 
 class OfflineRendererTests(unittest.TestCase):

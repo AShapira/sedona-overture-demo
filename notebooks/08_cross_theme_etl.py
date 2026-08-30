@@ -105,11 +105,12 @@ display(quality.toPandas())
 # ## Optional write
 #
 # Writes are off by default so opening a lesson does not mutate project data.
-# When enabled, the helper probes the configured derived S3 prefix, writes a
-# new run-specific directory, and verifies it by reading the row count back.
-# If the probe is denied before a data write begins, it may fall back to the
-# bounded `/scratch/derived` area. A started or ambiguous S3 failure never
-# triggers a second local write.
+# When enabled, `DERIVED_OUTPUT_MODE=s3` probes the configured derived S3
+# prefix, while explicit `local` mode writes directly to the mapped bounded
+# output directory. Each mode writes a new run-specific directory and verifies
+# it by reading the row count back. In S3 mode only, a denied probe may use the
+# legacy local fallback when `ALLOW_LOCAL_DERIVED_FALLBACK=true`. A started or
+# ambiguous S3 failure never triggers a second local write.
 
 # %%
 write_result = write_derived(

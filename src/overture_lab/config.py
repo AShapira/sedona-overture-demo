@@ -198,6 +198,7 @@ class LabSettings:
     inventory_include_row_counts: bool
     require_s3_release: bool
     write_derived: bool
+    derived_output_mode: str
     derived_output_uri: str | None
     allow_local_derived_fallback: bool
     derived_local_fallback_dir: str
@@ -273,6 +274,9 @@ def load_settings() -> LabSettings:
 
     medium_state_codes = _medium_state_codes()
     small_cities = _small_cities(medium_state_codes)
+    derived_output_mode = os.getenv("DERIVED_OUTPUT_MODE", "s3").strip().lower()
+    if derived_output_mode not in {"s3", "local"}:
+        raise ValueError("DERIVED_OUTPUT_MODE must be s3 or local")
 
     settings = LabSettings(
         release_uri=os.getenv("OVERTURE_RELEASE_URI", "/data/overture"),
@@ -307,9 +311,10 @@ def load_settings() -> LabSettings:
         ),
         require_s3_release=_boolean("REQUIRE_S3_RELEASE", False),
         write_derived=_boolean("WRITE_DERIVED", False),
+        derived_output_mode=derived_output_mode,
         derived_output_uri=os.getenv("DERIVED_OUTPUT_URI") or None,
         allow_local_derived_fallback=_boolean(
-            "ALLOW_LOCAL_DERIVED_FALLBACK", True
+            "ALLOW_LOCAL_DERIVED_FALLBACK", False
         ),
         derived_local_fallback_dir=os.getenv(
             "DERIVED_LOCAL_FALLBACK_DIR", "/var/tmp/derived"
@@ -345,6 +350,7 @@ def load_settings() -> LabSettings:
             )
     if (
         settings.write_derived
+        and settings.derived_output_mode == "s3"
         and not settings.derived_output_uri
         and not settings.allow_local_derived_fallback
     ):

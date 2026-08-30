@@ -44,8 +44,9 @@ for notebook in "$@"; do
     -e SMALL_SAMPLE_LIMIT="${SMALL_SAMPLE_LIMIT:?Set SMALL_SAMPLE_LIMIT}" \
     -e MAP_FEATURE_LIMIT="${MAP_FEATURE_LIMIT:-50}" \
     -e WRITE_DERIVED="${WRITE_DERIVED:-false}" \
+    -e DERIVED_OUTPUT_MODE="${DERIVED_OUTPUT_MODE:-s3}" \
     -e DERIVED_OUTPUT_URI="${DERIVED_OUTPUT_URI:-}" \
-    -e ALLOW_LOCAL_DERIVED_FALLBACK="${ALLOW_LOCAL_DERIVED_FALLBACK:-true}" \
+    -e ALLOW_LOCAL_DERIVED_FALLBACK="${ALLOW_LOCAL_DERIVED_FALLBACK:-false}" \
     -e DERIVED_LOCAL_FALLBACK_DIR=/var/tmp/derived \
     -v "${project_dir}:/workspace" \
     -v "${release_dir}:/data/overture:ro" \
