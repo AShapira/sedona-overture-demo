@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same twelve lessons support a read-only filesystem release
+Apache Sedona. The same thirteen lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -26,10 +26,20 @@ only collect explicitly bounded results for tables or maps.
 | `09_heavy_visualization` | Safe collection, aggregation, simplification and maps |
 | `10_standalone_sedonaspark_clipped_roads` | Regional road clipping, named S3 exports, large maps |
 | `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
+| `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included
 sync script; Jupytext is not required in the air gap.
+
+Notebook 12 is the transportation capstone. It selects Road 6 by the exact
+nested route identity `ref="6"` plus Wikidata `Q595131`, then keeps the complete
+source segment rows while deriving separate route-range, connector, graph, and
+map projections. Its statistics are recomputed for the configured release; the
+official 188 km corridor context is deliberately kept separate from full and
+route-scoped directional feature lengths. Static and interactive maps remain
+offline unless the optional internal WMS is configured, and the lesson never
+writes a derivative dataset.
 
 ## Start with a local release
 
@@ -240,6 +250,17 @@ podman run --rm --security-opt=no-new-privileges --memory=8g \
   -v "$PWD:/workspace:ro" -w /workspace --entrypoint python3 \
   docker.io/apache/sedona:1.9.0@sha256:a1acf172621652c926214259045b2324f75341026dd726db0bef7e21b4205525 \
   tests/check_regions_spark.py
+```
+
+Check the synthetic Road 6 route range, exact connector resolution, directed
+components, and crossing-without-connectivity case in the same runtime:
+
+```bash
+podman run --rm --security-opt=no-new-privileges --memory=8g \
+  -e PYTHONPATH=/workspace/src:/opt/spark/python \
+  -v "$PWD:/workspace:ro" -w /workspace --entrypoint python3 \
+  docker.io/apache/sedona:1.9.0@sha256:a1acf172621652c926214259045b2324f75341026dd726db0bef7e21b4205525 \
+  tests/check_road6_spark.py
 ```
 
 Render only the Windows Compose image reference without printing the

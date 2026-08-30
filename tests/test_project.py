@@ -31,6 +31,11 @@ from overture_lab.regions import (  # noqa: E402
     _resolve_city_division_ids,
 )
 from overture_lab.scratch import scratch_status  # noqa: E402
+from overture_lab.transportation_case import (  # noqa: E402
+    _normalise_between,
+    _route_topology,
+    _rule_boundaries,
+)
 from overture_lab.visualize import _offline_deck_document  # noqa: E402
 
 
@@ -634,7 +639,7 @@ class ConfigurationTests(unittest.TestCase):
 
 class NotebookTests(unittest.TestCase):
     def test_expected_curriculum_exists_and_is_valid_json(self):
-        expected = [f"{number:02d}" for number in range(12)]
+        expected = [f"{number:02d}" for number in range(13)]
         found = sorted(path.name[:2] for path in (ROOT / "notebooks").glob("*.ipynb"))
         self.assertEqual(found, expected)
         for path in (ROOT / "notebooks").glob("*.ipynb"):
@@ -710,6 +715,93 @@ class NotebookTests(unittest.TestCase):
             source,
         )
         self.assertIn("for field_name in source_bbox_field_names", source)
+
+    def test_road_6_lesson_is_bounded_offline_and_route_identified(self):
+        source = (
+            ROOT / "notebooks/12_road_6_transportation_model.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('ROAD_6_REF = "6"', source)
+        self.assertIn('ROAD_6_WIKIDATA = "Q595131"', source)
+        self.assertIn("bbox_overlap(", source)
+        self.assertIn("ST_LineSubstring", source)
+        self.assertIn("_route_topology(topology_input)", source)
+        self.assertIn("limit=settings.map_feature_limit", source)
+        self.assertIn("wms=settings.wms", source)
+        self.assertIn("is_focus_direction", source)
+        self.assertIn('get_line_width="properties._display_width"', source)
+        self.assertNotIn("Overpass", source)
+        fixture = (ROOT / "tests/make_s3_fixture.py").read_text(
+            encoding="utf-8"
+        )
+        for marker in (
+            "road6-north-one",
+            "road6-south-one",
+            "road6-connected-ramp",
+            "road6-unconnected-crossing",
+            '"between": [0.0, 0.8]',
+            '"values": ["is_bridge"]',
+            '"values": ["is_tunnel"]',
+        ):
+            self.assertIn(marker, fixture)
+        introduction = (
+            ROOT / "notebooks/07_transportation.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Notebook 12 applies these concepts", introduction)
+        self.assertIn('create_sedona(settings, "07-transportation")', introduction)
+
+
+class TransportationCaseTests(unittest.TestCase):
+    def test_between_ranges_and_presentation_boundaries_are_validated(self):
+        self.assertEqual(_normalise_between(None), (0.0, 1.0))
+        self.assertEqual(_normalise_between([0.2, 0.8]), (0.2, 0.8))
+        self.assertEqual(
+            _rule_boundaries([None, [0.2, 0.8]], [0.0, 0.5, 1.0]),
+            (0.0, 0.2, 0.5, 0.8, 1.0),
+        )
+        for invalid in ([0.5], [-0.1, 0.5], [0.7, 0.6], [0.0, 1.1]):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(ValueError):
+                    _normalise_between(invalid)
+
+    def test_route_topology_uses_connectors_and_derives_direction(self):
+        rows = []
+
+        def add(segment_id, start, middle, end, start_lat, end_lat):
+            references = [(start, 0.0), (end, 1.0)]
+            if middle is not None:
+                references.insert(1, (middle, 0.5))
+            for connector_id, at in references:
+                rows.append(
+                    {
+                        "segment_id": segment_id,
+                        "connector_id": connector_id,
+                        "at": at,
+                        "start_lat": start_lat,
+                        "end_lat": end_lat,
+                    }
+                )
+
+        add("north-1", "n0", "junction", "n1", 1.0, 2.0)
+        add("north-2", "n1", None, "n2", 2.0, 3.0)
+        add("south-1", "s2", None, "s1", 3.0, 2.0)
+        add("south-2", "s1", None, "s0", 2.0, 1.0)
+        topology = _route_topology(rows)
+        self.assertEqual(
+            sorted(item["segment_count"] for item in topology.components),
+            [2, 2],
+        )
+        self.assertTrue(all(item["directed_path"] for item in topology.components))
+        directions = {item["direction"] for item in topology.components}
+        self.assertEqual(directions, {"northbound", "southbound"})
+        assignments = {item["segment_id"]: item for item in topology.assignments}
+        self.assertLess(
+            assignments["north-1"]["route_order"],
+            assignments["north-2"]["route_order"],
+        )
+        self.assertLess(
+            assignments["south-1"]["route_order"],
+            assignments["south-2"]["route_order"],
+        )
 
 
 class OfflineRendererTests(unittest.TestCase):

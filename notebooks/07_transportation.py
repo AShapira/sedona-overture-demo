@@ -6,6 +6,9 @@
 # Segments carry linear geometry and rules. Connectors are point nodes used to
 # express connectivity and positions along segments. An H3 or other spatial
 # cell can accelerate search, but it does not replace connector topology.
+# Notebook 12 applies these concepts to every matching segment and connector of
+# Road 6, including directed graph order, linear-referenced rules, statistics,
+# and offline overview/detail maps.
 
 # %%
 from pyspark.sql import functions as F

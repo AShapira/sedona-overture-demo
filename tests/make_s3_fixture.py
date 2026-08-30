@@ -137,16 +137,188 @@ def main() -> int:
         schema=division_schema,
     )
 
+    names_type = pa.struct(
+        [
+            pa.field("primary", pa.string()),
+            pa.field("common", pa.map_(pa.string(), pa.string())),
+        ]
+    )
+    between_type = pa.list_(pa.float64())
+    connector_reference_type = pa.struct(
+        [
+            pa.field("connector_id", pa.string()),
+            pa.field("at", pa.float64()),
+        ]
+    )
+    route_type = pa.struct(
+        [
+            pa.field("name", pa.string()),
+            pa.field("network", pa.string()),
+            pa.field("ref", pa.string()),
+            pa.field("symbol", pa.string()),
+            pa.field("wikidata", pa.string()),
+            pa.field("between", between_type),
+        ]
+    )
+    source_type = pa.struct(
+        [
+            pa.field("property", pa.string()),
+            pa.field("dataset", pa.string()),
+            pa.field("license", pa.string()),
+            pa.field("record_id", pa.string()),
+            pa.field("update_time", pa.string()),
+            pa.field("confidence", pa.float64()),
+            pa.field("between", between_type),
+        ]
+    )
+    simple_when_type = pa.struct(
+        [
+            pa.field("heading", pa.string()),
+            pa.field("mode", pa.list_(pa.string())),
+            pa.field("using", pa.list_(pa.string())),
+        ]
+    )
+    speed_limit_type = pa.struct(
+        [
+            pa.field(
+                "max_speed",
+                pa.struct(
+                    [
+                        pa.field("value", pa.int32()),
+                        pa.field("unit", pa.string()),
+                    ]
+                ),
+            ),
+            pa.field("when", simple_when_type),
+            pa.field("between", between_type),
+        ]
+    )
+    access_type = pa.struct(
+        [
+            pa.field("access_type", pa.string()),
+            pa.field("when", simple_when_type),
+            pa.field("between", between_type),
+        ]
+    )
+    destination_type = pa.struct(
+        [
+            pa.field(
+                "labels",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("value", pa.string()),
+                            pa.field("type", pa.string()),
+                        ]
+                    )
+                ),
+            ),
+            pa.field("symbols", pa.list_(pa.string())),
+            pa.field("from_connector_id", pa.string()),
+            pa.field("to_segment_id", pa.string()),
+            pa.field("to_connector_id", pa.string()),
+            pa.field("final_heading", pa.string()),
+        ]
+    )
     segment_schema = geo_schema(
         [
             pa.field("id", pa.string(), nullable=False),
+            pa.field("names", names_type),
             pa.field("class", pa.string(), nullable=False),
+            pa.field("subclass", pa.string()),
             pa.field("subtype", pa.string(), nullable=False),
+            pa.field("connectors", pa.list_(connector_reference_type)),
+            pa.field(
+                "road_surface",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("value", pa.string()),
+                            pa.field("between", between_type),
+                        ]
+                    )
+                ),
+            ),
+            pa.field(
+                "road_flags",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("values", pa.list_(pa.string())),
+                            pa.field("between", between_type),
+                        ]
+                    )
+                ),
+            ),
+            pa.field(
+                "level_rules",
+                pa.list_(
+                    pa.struct(
+                        [
+                            pa.field("value", pa.int32()),
+                            pa.field("between", between_type),
+                        ]
+                    )
+                ),
+            ),
+            pa.field("access_restrictions", pa.list_(access_type)),
+            pa.field("speed_limits", pa.list_(speed_limit_type)),
+            pa.field(
+                "prohibited_transitions",
+                pa.list_(
+                    pa.struct([pa.field("between", between_type)])
+                ),
+            ),
+            pa.field("routes", pa.list_(route_type)),
+            pa.field("destinations", pa.list_(destination_type)),
+            pa.field("sources", pa.list_(source_type)),
             pa.field("geometry", pa.binary(), nullable=False),
+            pa.field("version", pa.int32()),
             pa.field("bbox", bbox_type, nullable=False),
         ],
         ["LineString"],
     )
+
+    def segment_record(
+        feature_id: str,
+        road_class: str,
+        points: list[tuple[float, float]],
+        *,
+        name: str | None = None,
+        subclass: str | None = None,
+        connectors: list[dict[str, object]] | None = None,
+        routes: list[dict[str, object]] | None = None,
+        speed_limits: list[dict[str, object]] | None = None,
+        road_flags: list[dict[str, object]] | None = None,
+        level_rules: list[dict[str, object]] | None = None,
+        access_restrictions: list[dict[str, object]] | None = None,
+        road_surface: list[dict[str, object]] | None = None,
+        destinations: list[dict[str, object]] | None = None,
+        sources: list[dict[str, object]] | None = None,
+    ) -> dict[str, object]:
+        return {
+            "id": feature_id,
+            "names": (
+                {"primary": name, "common": {"en": name}} if name else None
+            ),
+            "class": road_class,
+            "subclass": subclass,
+            "subtype": "road",
+            "connectors": connectors,
+            "road_surface": road_surface,
+            "road_flags": road_flags,
+            "level_rules": level_rules,
+            "access_restrictions": access_restrictions,
+            "speed_limits": speed_limits,
+            "prohibited_transitions": [],
+            "routes": routes,
+            "destinations": destinations,
+            "sources": sources,
+            "geometry": line_wkb(points),
+            "version": 1,
+            "bbox": bounds(points),
+        }
+
     segment_rows = []
     for feature_id, road_class, points in (
         (
@@ -170,25 +342,213 @@ def main() -> int:
             [(34.3, 32.3), (34.4, 32.4)],
         ),
     ):
-        segment_rows.append(
+        segment_rows.append(segment_record(feature_id, road_class, points))
+
+    route_6 = {
+        "name": "כביש חוצה ישראל",
+        "network": None,
+        "ref": "6",
+        "symbol": None,
+        "wikidata": "Q595131",
+        "between": None,
+    }
+    denied_backward = [
+        {
+            "access_type": "denied",
+            "when": {"heading": "backward", "mode": None, "using": None},
+            "between": None,
+        }
+    ]
+    paved = [{"value": "paved", "between": None}]
+
+    def osm_source(record_id: str, between=None) -> list[dict[str, object]]:
+        return [
             {
-                "id": feature_id,
-                "class": road_class,
-                "subtype": "road",
-                "geometry": line_wkb(points),
-                "bbox": bounds(points),
+                "property": "",
+                "dataset": "OpenStreetMap",
+                "license": "ODbL-1.0",
+                "record_id": record_id,
+                "update_time": "2026-01-01T00:00:00Z",
+                "confidence": None,
+                "between": between,
             }
-        )
+        ]
+
+    segment_rows.extend(
+        [
+            segment_record(
+                "road6-north-one",
+                "motorway",
+                [(34.80, 31.40), (34.80, 31.45), (34.80, 31.50)],
+                name="כביש חוצה ישראל",
+                connectors=[
+                    {"connector_id": "road6-north-start", "at": 0.0},
+                    {"connector_id": "road6-interchange", "at": 0.5},
+                    {"connector_id": "road6-north-middle", "at": 1.0},
+                ],
+                routes=[route_6],
+                speed_limits=[
+                    {
+                        "max_speed": {"value": 110, "unit": "km/h"},
+                        "when": None,
+                        "between": None,
+                    }
+                ],
+                road_flags=[
+                    {"values": ["is_bridge"], "between": [0.2, 0.4]}
+                ],
+                level_rules=[{"value": 1, "between": [0.2, 0.4]}],
+                access_restrictions=denied_backward,
+                road_surface=paved,
+                sources=osm_source("w6001@1"),
+            ),
+            segment_record(
+                "road6-north-two",
+                "motorway",
+                [(34.80, 31.50), (34.80, 31.60)],
+                name="כביש חוצה ישראל",
+                connectors=[
+                    {"connector_id": "road6-north-middle", "at": 0.0},
+                    {"connector_id": "road6-north-end", "at": 1.0},
+                ],
+                routes=[route_6],
+                speed_limits=[
+                    {
+                        "max_speed": {"value": 120, "unit": "km/h"},
+                        "when": None,
+                        "between": [0.0, 0.6],
+                    },
+                    {
+                        "max_speed": {"value": 100, "unit": "km/h"},
+                        "when": None,
+                        "between": [0.6, 1.0],
+                    },
+                ],
+                road_flags=[
+                    {
+                        "values": ["is_under_construction"],
+                        "between": [0.7, 0.9],
+                    }
+                ],
+                access_restrictions=denied_backward,
+                road_surface=paved,
+                sources=osm_source("w6002@1"),
+            ),
+            segment_record(
+                "road6-south-one",
+                "motorway",
+                [(34.81, 31.60), (34.81, 31.50)],
+                name="כביש חוצה ישראל",
+                connectors=[
+                    {"connector_id": "road6-south-end", "at": 0.0},
+                    {"connector_id": "road6-south-middle", "at": 1.0},
+                ],
+                routes=[route_6],
+                speed_limits=[
+                    {
+                        "max_speed": {"value": 110, "unit": "km/h"},
+                        "when": None,
+                        "between": None,
+                    }
+                ],
+                road_flags=[
+                    {"values": ["is_tunnel"], "between": [0.3, 0.6]}
+                ],
+                level_rules=[{"value": -1, "between": [0.3, 0.6]}],
+                access_restrictions=denied_backward,
+                road_surface=paved,
+                sources=osm_source("w6003@1"),
+            ),
+            segment_record(
+                "road6-south-two",
+                "motorway",
+                [(34.81, 31.50), (34.81, 31.40)],
+                name="כביש חוצה ישראל",
+                connectors=[
+                    {"connector_id": "road6-south-middle", "at": 0.0},
+                    {"connector_id": "road6-south-start", "at": 1.0},
+                ],
+                routes=[{**route_6, "between": [0.0, 0.8]}],
+                speed_limits=[
+                    {
+                        "max_speed": {"value": 90, "unit": "km/h"},
+                        "when": None,
+                        "between": None,
+                    }
+                ],
+                access_restrictions=denied_backward,
+                road_surface=paved,
+                sources=osm_source("w6004@1", [0.0, 0.8]),
+            ),
+            segment_record(
+                "road6-connected-ramp",
+                "motorway",
+                [(34.80, 31.45), (34.75, 31.45)],
+                name="Fixture interchange ramp",
+                subclass="link",
+                connectors=[
+                    {"connector_id": "road6-interchange", "at": 0.0},
+                    {"connector_id": "road6-ramp-end", "at": 1.0},
+                ],
+                access_restrictions=denied_backward,
+                road_surface=paved,
+                sources=osm_source("w6010@1"),
+            ),
+            segment_record(
+                "road6-unconnected-crossing",
+                "primary",
+                [(34.75, 31.55), (34.85, 31.55)],
+                name="Fixture crossing road",
+                connectors=[
+                    {"connector_id": "road6-crossing-west", "at": 0.0},
+                    {"connector_id": "road6-crossing-east", "at": 1.0},
+                ],
+                road_surface=paved,
+                sources=osm_source("w6011@1"),
+            ),
+        ]
+    )
     segment_table = pa.Table.from_pylist(
         segment_rows,
         schema=segment_schema,
     )
 
-    names_type = pa.struct(
+    connector_points = {
+        "road6-north-start": (34.80, 31.40),
+        "road6-interchange": (34.80, 31.45),
+        "road6-north-middle": (34.80, 31.50),
+        "road6-north-end": (34.80, 31.60),
+        "road6-south-end": (34.81, 31.60),
+        "road6-south-middle": (34.81, 31.50),
+        "road6-south-start": (34.81, 31.40),
+        "road6-ramp-end": (34.75, 31.45),
+        "road6-crossing-west": (34.75, 31.55),
+        "road6-crossing-east": (34.85, 31.55),
+    }
+    connector_schema = geo_schema(
         [
-            pa.field("primary", pa.string()),
-            pa.field("common", pa.map_(pa.string(), pa.string())),
-        ]
+            pa.field("id", pa.string(), nullable=False),
+            pa.field("sources", pa.list_(source_type)),
+            pa.field("geometry", pa.binary(), nullable=False),
+            pa.field("version", pa.int32()),
+            pa.field("bbox", bbox_type, nullable=False),
+        ],
+        ["Point"],
+    )
+    connector_table = pa.Table.from_pylist(
+        [
+            {
+                "id": connector_id,
+                "sources": osm_source(f"n{index}@1"),
+                "geometry": point_wkb(*point),
+                "version": 1,
+                "bbox": bounds([point]),
+            }
+            for index, (connector_id, point) in enumerate(
+                sorted(connector_points.items()), start=1
+            )
+        ],
+        schema=connector_schema,
     )
     categories_type = pa.struct(
         [
@@ -430,6 +790,8 @@ def main() -> int:
             table = infrastructure_table
         elif (theme, feature_type) == ("transportation", "segment"):
             table = segment_table
+        elif (theme, feature_type) == ("transportation", "connector"):
+            table = connector_table
         pq.write_table(table, leaf / "part-00000.parquet", compression="zstd")
     return 0
 
