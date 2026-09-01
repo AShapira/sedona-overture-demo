@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+<rect width="100%" height="100%" fill="#171b20"/>
+<text x="50" y="65" font-family="sans-serif" font-size="32" font-weight="700" fill="#e9edf1">Synthetic map preview — Dark</text>
+<path d="M0 490 C230 430 350 590 610 500 S920 400 1200 470 V720 H0Z" fill="#356f91"/>
+<path d="M0 0 H1200 V500 C900 410 750 520 530 485 S220 430 0 500Z" fill="#426b4d" opacity="0.45"/>
+<path d="M80 140 H520 V390 H80Z" fill="#4d5056" opacity="0.9"/>
+<path d="M660 95 H1080 V355 H660Z" fill="#81594f" opacity="0.9"/>
+<path d="M-30 260 C250 220 520 315 790 245 S1050 190 1230 225" fill="none" stroke="#89949e" stroke-width="24"/>
+<path d="M-30 260 C250 220 520 315 790 245 S1050 190 1230 225" fill="none" stroke="#d18458" stroke-width="16"/>
+<path d="M250 -20 C260 170 300 410 360 740" fill="none" stroke="#89949e" stroke-width="14"/>
+<path d="M250 -20 C260 170 300 410 360 740" fill="none" stroke="#f06b63" stroke-width="8"/>
+<circle cx="170" cy="180" r="16" fill="#ef855f" stroke="#11151a" stroke-width="5"/>
+<circle cx="465" cy="325" r="16" fill="#f16e79" stroke="#11151a" stroke-width="5"/>
+<circle cx="760" cy="155" r="16" fill="#70b6a5" stroke="#11151a" stroke-width="5"/>
+<circle cx="980" cy="310" r="16" fill="#70a6d7" stroke="#11151a" stroke-width="5"/>
+<text x="105" y="110" font-family="sans-serif" font-size="21" fill="#e9edf1" stroke="#11151a" stroke-width="5" paint-order="stroke">Sample district</text>
+<text x="700" y="395" font-family="sans-serif" font-size="20" fill="#e9edf1" stroke="#11151a" stroke-width="5" paint-order="stroke">Civic center</text>
+<text x="50" y="685" font-family="sans-serif" font-size="18" fill="#e9edf1">Bound to Overture schema 1.18.0 · QGIS 4.2 · synthetic data</text>
+</svg>

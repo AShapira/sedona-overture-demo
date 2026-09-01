@@ -17,6 +17,7 @@ jobs:
           python-version: "3.12"
       - name: Validate Python and generated notebooks
         run: |
-          python -m compileall -q src tests scripts/sync_notebooks.py
+          python -m compileall -q src tests scripts/sync_notebooks.py qgis/schema-1.18.0
+          python qgis/schema-1.18.0/generate_styles.py --check
           python -m unittest discover -s tests -v
           bash -n scripts/smoke-notebooks.sh scripts/test-local-s3.sh

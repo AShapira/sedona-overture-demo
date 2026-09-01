@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="760" viewBox="0 0 1100 760">
+<rect width="100%" height="100%" fill="#171b20"/>
+<text x="50" y="65" font-family="sans-serif" font-size="32" font-weight="700" fill="#e9edf1">Legend — Dark</text>
+<rect x="60" y="125" width="90" height="58" rx="8" fill="#356f91" stroke="#89949e" stroke-width="2"/>
+<text x="175" y="164" font-family="sans-serif" font-size="23" fill="#e9edf1">Water</text>
+<rect x="580" y="125" width="90" height="58" rx="8" fill="#2f563c" stroke="#89949e" stroke-width="2"/>
+<text x="695" y="164" font-family="sans-serif" font-size="23" fill="#e9edf1">Forest</text>
+<rect x="60" y="250" width="90" height="58" rx="8" fill="#426b4d" stroke="#89949e" stroke-width="2"/>
+<text x="175" y="289" font-family="sans-serif" font-size="23" fill="#e9edf1">Land cover</text>
+<rect x="580" y="250" width="90" height="58" rx="8" fill="#4d5056" stroke="#89949e" stroke-width="2"/>
+<text x="695" y="289" font-family="sans-serif" font-size="23" fill="#e9edf1">Residential</text>
+<rect x="60" y="375" width="90" height="58" rx="8" fill="#81594f" stroke="#89949e" stroke-width="2"/>
+<text x="175" y="414" font-family="sans-serif" font-size="23" fill="#e9edf1">Commercial</text>
+<rect x="580" y="375" width="90" height="58" rx="8" fill="#62556e" stroke="#89949e" stroke-width="2"/>
+<text x="695" y="414" font-family="sans-serif" font-size="23" fill="#e9edf1">Industrial</text>
+<rect x="60" y="500" width="90" height="58" rx="8" fill="#d18458" stroke="#89949e" stroke-width="2"/>
+<text x="175" y="539" font-family="sans-serif" font-size="23" fill="#e9edf1">Transport</text>
+<rect x="580" y="500" width="90" height="58" rx="8" fill="#ef855f" stroke="#89949e" stroke-width="2"/>
+<text x="695" y="539" font-family="sans-serif" font-size="23" fill="#e9edf1">Places</text>
+<text x="50" y="725" font-family="sans-serif" font-size="18" fill="#e9edf1">Bound to Overture schema 1.18.0 · QGIS 4.2 · synthetic data</text>
+</svg>

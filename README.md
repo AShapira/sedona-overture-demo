@@ -41,6 +41,19 @@ route-scoped directional feature lengths. Static and interactive maps remain
 offline unless the optional internal WMS is configured, and the lesson never
 writes a derivative dataset.
 
+## QGIS style packs
+
+The repository includes professional Light Neutral and Dark QGIS styles for
+Buildings, Places, Transportation, and all six Base feature types. The pack is
+explicitly bound to **Overture schema 1.18.0** and **QGIS 4.2**; other Overture
+schema versions are unverified. It operates directly on raw dotted GeoParquet
+fields and includes geometry-specific QML variants, offline SVG symbols,
+scale-aware labels, a schema validator, and bounded test-data tooling.
+
+See the [schema 1.18.0 QGIS guide](qgis/schema-1.18.0/README.md) before applying
+a style. Real-data test extracts and native render evidence stay under ignored
+artifacts and are never committed.
+
 ## Start with a local release
 
 1. Copy `.env.example` to `.env`, configure the required geographic scales,
