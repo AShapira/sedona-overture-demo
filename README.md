@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same thirteen lessons support a read-only filesystem release
+Apache Sedona. The same fourteen lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -27,6 +27,15 @@ only collect explicitly bounded results for tables or maps.
 | `10_standalone_sedonaspark_clipped_roads` | Regional whole-road selection, named S3 exports, large maps |
 | `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
 | `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
+| `13_import_overture_postgis` | Small regional imports into existing PostGIS; verified snapshots and transactional bulk loading |
+
+For production console imports with the same implementation, see the
+[Sedona → PostGIS import guide](docs/import-overture-postgis.md). It includes
+offline client-image preparation and the `prepare`, `load`, `verify`, and `run`
+Python commands. New snapshots use per-feature WGS84 UTM with explicit SRIDs
+and crossing flags, plus PostGIS geography for distances across zones. Legacy
+normalized-v2 loading remains supported. Notebook 13 leaves database writes
+disabled by default.
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included

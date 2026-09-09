@@ -1,0 +1,8 @@
+FROM docker.io/apache/sedona:1.9.0@sha256:a1acf172621652c926214259045b2324f75341026dd726db0bef7e21b4205525
+COPY requirements-postgis.txt /opt/postgis-import/requirements.txt
+COPY .artifacts/postgis-wheels/ /opt/postgis-import/wheels/
+RUN python3 -m venv --without-pip --system-site-packages /opt/postgis-import/venv \
+    && /opt/postgis-import/venv/bin/python -m pip install --no-index --find-links=/opt/postgis-import/wheels --requirement /opt/postgis-import/requirements.txt \
+    && /opt/postgis-import/venv/bin/python -m ipykernel install --prefix=/usr/local --name python3 --display-name 'Python 3 (Sedona + PostGIS)'
+ENV VIRTUAL_ENV=/opt/postgis-import/venv
+ENV PATH=/opt/postgis-import/venv/bin:$PATH

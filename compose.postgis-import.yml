@@ -1,0 +1,8 @@
+# Overlay for compose.yml or the Windows S3 configuration. Build on a
+# connected preparation machine, then save/load the resulting image offline.
+services:
+  lab:
+    image: ${POSTGIS_IMPORT_IMAGE:-localhost/sedona-overture-postgis:1.9.0}
+    build:
+      context: .
+      dockerfile: Containerfile.postgis-import

@@ -639,7 +639,7 @@ class ConfigurationTests(unittest.TestCase):
 
 class NotebookTests(unittest.TestCase):
     def test_expected_curriculum_exists_and_is_valid_json(self):
-        expected = [f"{number:02d}" for number in range(13)]
+        expected = [f"{number:02d}" for number in range(14)]
         found = sorted(path.name[:2] for path in (ROOT / "notebooks").glob("*.ipynb"))
         self.assertEqual(found, expected)
         for path in (ROOT / "notebooks").glob("*.ipynb"):
@@ -666,9 +666,11 @@ class NotebookTests(unittest.TestCase):
             self.assertIn("WMS_LAYERS", compose)
 
     def test_removed_geographic_terms_and_interfaces_are_absent(self):
-        forbidden = (
+        geographic_defaults = (
             "isr" + "ael",
             "ash" + "dod",
+        )
+        forbidden = (
             "focus_" + "country_code",
             "focus_" + "locality_en",
             "focus_" + "locality_country_code",
@@ -677,7 +679,7 @@ class NotebookTests(unittest.TestCase):
             "resolve_" + "focus_regions",
         )
         tracked = subprocess.run(
-            ["git", "ls-files", "-z"],
+            ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
             cwd=ROOT,
             check=True,
             capture_output=True,
@@ -691,7 +693,12 @@ class NotebookTests(unittest.TestCase):
                 content = path.read_text(encoding="utf-8").lower()
             except UnicodeDecodeError:
                 continue
-            for term in forbidden:
+            # Regional teaching examples and legacy PostGIS imports can
+            # name places. Shared scale configuration must remain region-neutral.
+            terms = forbidden
+            if path.relative_to(ROOT).as_posix() in {"src/overture_lab/config.py", "src/overture_lab/regions.py"}:
+                terms += geographic_defaults
+            for term in terms:
                 if term in content:
                     matches.append(f"{path.relative_to(ROOT)}: {term}")
         self.assertEqual(matches, [])
