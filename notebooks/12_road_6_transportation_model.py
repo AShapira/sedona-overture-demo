@@ -41,7 +41,7 @@ from pyspark.sql import functions as F
 
 from overture_lab.catalog import schema_table
 from overture_lab.config import load_settings
-from overture_lab.regions import Bounds, bbox_overlap
+from overture_lab.regions import Bounds, bbox_overlap, select_country_areas
 from overture_lab.spark import create_sedona, read_type
 from overture_lab.transportation_case import (
     _normalise_between,
@@ -52,9 +52,11 @@ from overture_lab.visualize import (
     build_interactive_deck,
     collect_geodataframe,
     offline_deck_display,
+    notify_map_coordinates,
 )
 
-settings = load_settings()
+INCLUDE_TERRITORIAL_WATERS = True  # Country context only; Road 6 scope is unchanged
+settings = load_settings(include_territorial_waters=INCLUDE_TERRITORIAL_WATERS)
 spark = create_sedona(settings, "12-road-6-transportation-model")
 
 # This bbox is only a Parquet pruning window. Route membership is decided by
@@ -69,6 +71,7 @@ MAX_CONNECTOR_REFERENCES = 25_000
 display(
     {
         "release": settings.release,
+        "country_context_extent": settings.region_extent_label,
         "release_uri": settings.release_uri,
         "route_ref": ROAD_6_REF,
         "route_wikidata": ROAD_6_WIKIDATA,
@@ -1228,10 +1231,9 @@ division_areas = read_type(
     spark, settings, "divisions", "division_area"
 )
 context_boundary = bbox_overlap(
-    division_areas.where(
-        (F.col("country") == "IL")
-        & (F.col("subtype") == "country")
-        & F.col("is_land")
+    select_country_areas(
+        division_areas, ("IL",),
+        include_territorial_waters=settings.include_territorial_waters,
     ),
     (ROAD_6_BOUNDS,),
 )
@@ -1245,37 +1247,44 @@ direction_palette = {
     "northbound": "#2563eb",
     "southbound": "#dc2626",
 }
-_, axis = plt.subplots(figsize=(18, 12))
-if not context_gdf.empty:
-    context_gdf.boundary.plot(
-        ax=axis, color="#52525b", linewidth=1.0, zorder=1
+notify_map_coordinates({
+    "Country boundary": context_gdf, "Road 6": route_map_gdf,
+    "Connectors": connector_map_gdf,
+})
+# Keep every vertex in Matplotlib rendering as well.
+with plt.rc_context({"path.simplify": False}):
+    _, axis = plt.subplots(figsize=(18, 12))
+    if not context_gdf.empty:
+        context_gdf.boundary.plot(
+            ax=axis, color="#52525b", linewidth=1.0, zorder=1
+        )
+    for direction, group in route_map_gdf.groupby("direction"):
+        group.plot(
+            ax=axis,
+            color=direction_palette.get(direction, "#7c3aed"),
+            linewidth=2.0,
+            label=direction,
+            zorder=3,
+        )
+    if not connector_map_gdf.empty:
+        connector_map_gdf.plot(
+            ax=axis,
+            color="#111827",
+            markersize=7,
+            alpha=0.55,
+            label="connector",
+            zorder=4,
+        )
+    axis.set_title(
+        "Road 6 as Overture directional segments and connector points\n"
+        f"release {settings.release}; overview mode: {overview_mode}\n"
+        f"Country context: {settings.region_extent_label}"
     )
-for direction, group in route_map_gdf.groupby("direction"):
-    group.plot(
-        ax=axis,
-        color=direction_palette.get(direction, "#7c3aed"),
-        linewidth=2.0,
-        label=direction,
-        zorder=3,
-    )
-if not connector_map_gdf.empty:
-    connector_map_gdf.plot(
-        ax=axis,
-        color="#111827",
-        markersize=7,
-        alpha=0.55,
-        label="connector",
-        zorder=4,
-    )
-axis.set_title(
-    "Road 6 as Overture directional segments and connector points\n"
-    f"release {settings.release}; overview mode: {overview_mode}"
-)
-axis.set_xlabel("longitude")
-axis.set_ylabel("latitude")
-axis.set_aspect("equal")
-axis.legend()
-plt.show()
+    axis.set_xlabel("longitude")
+    axis.set_ylabel("latitude")
+    axis.set_aspect("equal")
+    axis.legend()
+    plt.show()
 
 # %% [markdown]
 # ## 14. Offline interactive route map
@@ -1409,49 +1418,52 @@ def detail_width(row):
 
 detail_gdf["_display_color"] = detail_gdf.apply(detail_colour, axis=1)
 detail_gdf["_display_width"] = detail_gdf.apply(detail_width, axis=1)
-_, axis = plt.subplots(figsize=(12, 10))
-for label, mask, colour, width in (
-    (
-        "nearby, no focus connector",
-        ~detail_gdf["connected_to_focus"] & ~detail_gdf["is_road_6"],
-        "#71717a",
-        1.0,
-    ),
-    (
-        "connected external road",
-        detail_gdf["connected_to_focus"] & ~detail_gdf["is_road_6"],
-        "#16a34a",
-        2.5,
-    ),
-    (
-        "Road 6 opposite direction",
-        detail_gdf["is_road_6"] & ~detail_gdf["is_focus_direction"],
-        "#f59e0b",
-        1.4,
-    ),
-    (
-        f"Road 6 {focus_direction}: connector direction",
-        detail_gdf["is_focus_direction"],
-        "#2563eb",
-        4.0,
-    ),
-):
-    subset = detail_gdf[mask]
-    if not subset.empty:
-        subset.plot(ax=axis, color=colour, linewidth=width, label=label)
-focus_connector_gdf.plot(
-    ax=axis,
-    color="#dc2626",
-    edgecolor="#111827",
-    markersize=90,
-    label="selected shared connector",
-    zorder=5,
-)
-axis.set_title(f"Road 6 connector topology close-up: {focus_connector_id}")
-axis.set_xlabel("longitude")
-axis.set_ylabel("latitude")
-axis.legend()
-plt.show()
+notify_map_coordinates({"Road detail": detail_gdf, "Connectors": focus_connector_gdf})
+# Keep every vertex in Matplotlib rendering as well.
+with plt.rc_context({"path.simplify": False}):
+    _, axis = plt.subplots(figsize=(12, 10))
+    for label, mask, colour, width in (
+        (
+            "nearby, no focus connector",
+            ~detail_gdf["connected_to_focus"] & ~detail_gdf["is_road_6"],
+            "#71717a",
+            1.0,
+        ),
+        (
+            "connected external road",
+            detail_gdf["connected_to_focus"] & ~detail_gdf["is_road_6"],
+            "#16a34a",
+            2.5,
+        ),
+        (
+            "Road 6 opposite direction",
+            detail_gdf["is_road_6"] & ~detail_gdf["is_focus_direction"],
+            "#f59e0b",
+            1.4,
+        ),
+        (
+            f"Road 6 {focus_direction}: connector direction",
+            detail_gdf["is_focus_direction"],
+            "#2563eb",
+            4.0,
+        ),
+    ):
+        subset = detail_gdf[mask]
+        if not subset.empty:
+            subset.plot(ax=axis, color=colour, linewidth=width, label=label)
+    focus_connector_gdf.plot(
+        ax=axis,
+        color="#dc2626",
+        edgecolor="#111827",
+        markersize=90,
+        label="selected shared connector",
+        zorder=5,
+    )
+    axis.set_title(f"Road 6 connector topology close-up: {focus_connector_id}")
+    axis.set_xlabel("longitude")
+    axis.set_ylabel("latitude")
+    axis.legend()
+    plt.show()
 
 detail_layer = pdk.Layer(
     "GeoJsonLayer",
@@ -1522,38 +1534,43 @@ focus_connector_map_gdf = collect_geodataframe(
     limit=settings.map_feature_limit,
     columns=["connector_id", "at", "geometry"],
 )
-_, axis = plt.subplots(figsize=(13, 9))
-focus_slice_gdf.plot(
-    ax=axis,
-    column="max_speed_kmh",
-    cmap="viridis",
-    legend=True,
-    linewidth=6,
-    missing_kwds={"color": "#a1a1aa", "label": "no explicit speed"},
-)
-focus_connector_map_gdf.plot(
-    ax=axis,
-    color="#dc2626",
-    marker="s",
-    markersize=65,
-    label="connector reference",
-    zorder=4,
-)
-for _, row in focus_connector_map_gdf.iterrows():
-    axis.annotate(
-        f"at={row['at']:.3f}",
-        (row.geometry.x, row.geometry.y),
-        xytext=(5, 5),
-        textcoords="offset points",
+notify_map_coordinates({
+    "Speed slices": focus_slice_gdf, "Connectors": focus_connector_map_gdf,
+})
+# Keep every vertex in Matplotlib rendering as well.
+with plt.rc_context({"path.simplify": False}):
+    _, axis = plt.subplots(figsize=(13, 9))
+    focus_slice_gdf.plot(
+        ax=axis,
+        column="max_speed_kmh",
+        cmap="viridis",
+        legend=True,
+        linewidth=6,
+        missing_kwds={"color": "#a1a1aa", "label": "no explicit speed"},
     )
-axis.set_title(
-    "Presentation-only linear-reference slices\n"
-    f"segment {focus_segment_id}"
-)
-axis.set_xlabel("longitude")
-axis.set_ylabel("latitude")
-axis.legend()
-plt.show()
+    focus_connector_map_gdf.plot(
+        ax=axis,
+        color="#dc2626",
+        marker="s",
+        markersize=65,
+        label="connector reference",
+        zorder=4,
+    )
+    for _, row in focus_connector_map_gdf.iterrows():
+        axis.annotate(
+            f"at={row['at']:.3f}",
+            (row.geometry.x, row.geometry.y),
+            xytext=(5, 5),
+            textcoords="offset points",
+        )
+    axis.set_title(
+        "Presentation-only linear-reference slices\n"
+        f"segment {focus_segment_id}"
+    )
+    axis.set_xlabel("longitude")
+    axis.set_ylabel("latitude")
+    axis.legend()
+    plt.show()
 
 # %% [markdown]
 # ## 17. Interpretation and quality boundaries

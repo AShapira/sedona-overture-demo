@@ -15,7 +15,7 @@ def inspect_type(
     feature_type: str,
     sample_columns: list[str],
 ):
-    """Return raw data plus configured medium and small samples."""
+    """Return raw, selected regional (historical 'medium' key), and city samples."""
     raw = read_type(spark, settings, theme, feature_type)
     medium = bounded_sample(
         raw,

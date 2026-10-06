@@ -9,11 +9,12 @@
 # writing is enabled. The roads GeoParquet has exactly the source segment
 # schema, with original native geometry and bbox values; CSV contains the
 # configured subset and full geometry as WKT; boundary GeoParquet contains the
-# one-row configured land-country union used for selection.
+# one-row configured country union used for selection.
 #
 # This lesson is independent of earlier notebook outputs. It selects broad
-# drivable road classes that intersect the union of the land-country areas
-# named by `MEDIUM_STATE_CODES`. Crossing and boundary-touching segments are
+# drivable road classes that intersect the union of the country areas
+# selected by `REGION_PRESET` from `MEDIUM_STATE_CODES` or
+# `LARGE_REGION_STATE_CODES`. Crossing and boundary-touching segments are
 # retained whole. The configured codes are source-data identifiers, not
 # geopolitical assertions.
 #
@@ -45,10 +46,23 @@ from pyspark.sql import functions as F
 
 from overture_lab.config import load_settings
 from overture_lab.outputs import write_single_file_exports
-from overture_lab.regions import Bounds, bbox_overlap, exact_intersection
+from overture_lab.regions import Bounds, bbox_overlap, exact_intersection, select_country_areas
 from overture_lab.spark import create_sedona, read_type
 
-settings = load_settings()
+REGION_PRESET = "medium"  # choose "medium" or "large"
+INCLUDE_TERRITORIAL_WATERS = True  # False selects land-only country boundaries
+settings = load_settings(
+    region_preset=REGION_PRESET,
+    include_territorial_waters=INCLUDE_TERRITORIAL_WATERS,
+)
+display(
+    {
+        "region_preset": settings.region_preset,
+        "region_state_codes": settings.region_state_codes,
+        "include_territorial_waters": settings.include_territorial_waters,
+        "country_extent": settings.region_extent_label,
+    }
+)
 spark = create_sedona(settings, "10-standalone-regional-road-selection")
 
 ROAD_CLASSES = (
@@ -87,7 +101,7 @@ display(
     {
         "release": settings.release,
         "release_uri": settings.release_uri,
-        "medium_state_codes": list(settings.medium_state_codes),
+        "region_state_codes": list(settings.region_state_codes),
         "road_classes": list(ROAD_CLASSES),
         "csv_export_columns": list(CSV_EXPORT_COLUMNS),
         "local_cores": settings.local_cores,
@@ -105,7 +119,7 @@ display(
 # ## 1. Resolve and union the configured country boundaries
 #
 # The notebook reads the immutable division-area source directly. Every
-# configured state code must resolve to at least one land-country area. Keeping
+# configured state code must resolve to at least one country area. Keeping
 # the individual source bboxes permits Parquet-friendly pruning before the
 # exact union-boundary selection.
 
@@ -115,10 +129,9 @@ division_areas = read_type(
     spark, settings, "divisions", "division_area"
 )
 selected_regions = (
-    division_areas.where(
-        F.col("country").isin(*settings.medium_state_codes)
-        & (F.col("subtype") == "country")
-        & F.col("is_land")
+    select_country_areas(
+        division_areas, settings.region_state_codes,
+        include_territorial_waters=settings.include_territorial_waters,
     )
     .select(
         "country",
@@ -128,16 +141,6 @@ selected_regions = (
     .persist(StorageLevel.MEMORY_AND_DISK)
 )
 selected_region_count = selected_regions.count()
-actual_codes = {
-    row.country
-    for row in selected_regions.select("country").distinct().collect()
-}
-missing_codes = set(settings.medium_state_codes) - actual_codes
-if missing_codes:
-    raise RuntimeError(
-        "No land-country division area found for configured codes: "
-        f"{sorted(missing_codes)}"
-    )
 
 region_bounds = tuple(
     Bounds(row.xmin, row.ymin, row.xmax, row.ymax)
@@ -297,7 +300,9 @@ display({"geoparquet_columns": geoparquet_roads.columns})
 # %%
 started = time.perf_counter()
 boundary_export = boundary.select(
-    F.lit(",".join(settings.medium_state_codes)).alias("state_codes"),
+    F.lit(",".join(settings.region_state_codes)).alias("state_codes"),
+    F.lit(settings.include_territorial_waters).alias("include_territorial_waters"),
+    F.lit(settings.region_extent).alias("region_extent"),
     F.col("boundary_geometry").alias("geometry"),
 )
 export_result = write_single_file_exports(
@@ -374,6 +379,7 @@ from overture_lab.visualize import (
     build_interactive_deck,
     collect_geodataframe,
     offline_deck_display,
+    notify_map_coordinates,
 )
 
 map_gdf = collect_geodataframe(
@@ -406,34 +412,37 @@ display(
 # %%
 import matplotlib.pyplot as plt
 
-_, axis = plt.subplots(figsize=(18, 12))
-boundary_gdf.boundary.plot(
-    ax=axis,
-    color="#111827",
-    linewidth=1.5,
-    zorder=2,
-)
-if map_gdf.empty:
-    axis.text(0.5, 0.5, "No roads in configured scope", ha="center")
-else:
-    map_gdf.plot(
+notify_map_coordinates({"Region boundary": boundary_gdf, "Roads": map_gdf})
+# Keep every vertex in Matplotlib rendering as well.
+with plt.rc_context({"path.simplify": False}):
+    _, axis = plt.subplots(figsize=(18, 12))
+    boundary_gdf.boundary.plot(
         ax=axis,
-        column="road_class",
-        categorical=True,
-        legend=True,
-        linewidth=0.7,
-        alpha=0.85,
-        zorder=3,
+        color="#111827",
+        linewidth=1.5,
+        zorder=2,
     )
-axis.set_title(
-    "Configured regional roads — deterministic bounded display sample\n"
-    f"{settings.medium_state_label}; at most "
-    f"{settings.map_feature_limit:,} whole source LineStrings"
-)
-axis.set_xlabel("longitude")
-axis.set_ylabel("latitude")
-axis.set_aspect("equal")
-plt.show()
+    if map_gdf.empty:
+        axis.text(0.5, 0.5, "No roads in configured scope", ha="center")
+    else:
+        map_gdf.plot(
+            ax=axis,
+            column="road_class",
+            categorical=True,
+            legend=True,
+            linewidth=0.7,
+            alpha=0.85,
+            zorder=3,
+        )
+    axis.set_title(
+        "Configured regional roads — deterministic bounded display sample\n"
+        f"{settings.region_state_label}; {settings.region_extent_label}; at most "
+        f"{settings.map_feature_limit:,} whole source LineStrings"
+    )
+    axis.set_xlabel("longitude")
+    axis.set_ylabel("latitude")
+    axis.set_aspect("equal")
+    plt.show()
 
 # %% [markdown]
 # ## 7. Offline interactive map

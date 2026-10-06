@@ -1,4 +1,4 @@
-"""Resolve configured medium and small scales from Overture divisions."""
+"""Resolve the selected regional preset and small scale from Overture divisions."""
 
 from __future__ import annotations
 
@@ -30,6 +30,8 @@ class Bounds:
 
 @dataclass(frozen=True)
 class ScaleRegions:
+    """The historical medium fields hold the notebook's selected regional tier."""
+
     medium: "DataFrame"
     small: "DataFrame"
     medium_bounds: tuple[Bounds, ...]
@@ -72,6 +74,35 @@ def _resolve_city_division_ids(
     return tuple(division_ids)
 
 
+def select_country_areas(
+    areas: "DataFrame", state_codes: tuple[str, ...], *,
+    include_territorial_waters: bool = True,
+) -> "DataFrame":
+    """Select one source extent per country and require every configured code.
+
+    Territorial rows already include land. Selecting both flags would duplicate
+    coastal countries; landlocked rows can have both flags and appear once.
+    """
+    from pyspark.sql import functions as F
+
+    if not isinstance(include_territorial_waters, bool):
+        raise ValueError("include_territorial_waters must be a boolean")
+    extent = "territorial" if include_territorial_waters else "land"
+    selected = areas.where(
+        F.col("country").isin(*state_codes)
+        & (F.col("subtype") == "country")
+        & F.col(f"is_{extent}")
+    )
+    resolved_codes = {row.country for row in selected.select("country").distinct().collect()}
+    missing_codes = set(state_codes) - resolved_codes
+    if missing_codes:
+        raise RuntimeError(
+            f"No {extent} country area found for configured state codes: "
+            f"{sorted(missing_codes)}"
+        )
+    return selected
+
+
 def resolve_scale_regions(
     spark: "SparkSession", settings: LabSettings
 ) -> ScaleRegions:
@@ -96,20 +127,10 @@ def resolve_scale_regions(
 
     areas = read_type(spark, settings, "divisions", "division_area")
     columns = ["id", "division_id", "country", "names", "bbox", "geometry"]
-    medium = areas.where(
-        F.col("country").isin(*settings.medium_state_codes)
-        & (F.col("subtype") == "country")
-        & F.col("is_land")
+    medium = select_country_areas(
+        areas, settings.region_state_codes,
+        include_territorial_waters=settings.include_territorial_waters,
     ).select(*columns)
-    resolved_codes = {
-        row.country for row in medium.select("country").distinct().collect()
-    }
-    missing_codes = set(settings.medium_state_codes) - resolved_codes
-    if missing_codes:
-        raise RuntimeError(
-            "No land country area found for configured state codes: "
-            f"{sorted(missing_codes)}"
-        )
 
     small = areas.where(
         F.col("division_id").isin(*division_ids) & F.col("is_land")

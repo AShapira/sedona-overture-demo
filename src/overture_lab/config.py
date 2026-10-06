@@ -76,16 +76,16 @@ def _state_code(value: object, source: str) -> str:
     return code
 
 
-def _medium_state_codes() -> tuple[str, ...]:
-    value = _required_json("MEDIUM_STATE_CODES")
+def _state_codes(name: str) -> tuple[str, ...]:
+    value = _required_json(name)
     if not isinstance(value, list) or not value:
-        raise ValueError("MEDIUM_STATE_CODES must be a non-empty JSON array")
+        raise ValueError(f"{name} must be a non-empty JSON array")
     codes = tuple(
-        _state_code(item, f"MEDIUM_STATE_CODES[{index}]")
+        _state_code(item, f"{name}[{index}]")
         for index, item in enumerate(value)
     )
     if len(set(codes)) != len(codes):
-        raise ValueError("MEDIUM_STATE_CODES must not contain duplicates")
+        raise ValueError(f"{name} must not contain duplicates")
     return codes
 
 
@@ -202,6 +202,9 @@ class LabSettings:
     derived_output_uri: str | None
     allow_local_derived_fallback: bool
     derived_local_fallback_dir: str
+    large_region_state_codes: tuple[str, ...] = ()
+    region_preset: str = "medium"
+    include_territorial_waters: bool = True
 
     def type_uri(self, theme: str, feature_type: str) -> str:
         return (
@@ -211,6 +214,8 @@ class LabSettings:
 
     def public_dict(self) -> dict[str, object]:
         values = asdict(self)
+        values["region_state_codes"] = self.region_state_codes
+        values["region_extent"] = self.region_extent
         values["s3_access_key"] = "<set>" if self.s3_access_key else None
         values["s3_secret_key"] = "<set>" if self.s3_secret_key else None
         return values
@@ -222,6 +227,25 @@ class LabSettings:
     @property
     def medium_state_label(self) -> str:
         return ", ".join(self.medium_state_codes)
+
+    @property
+    def region_state_codes(self) -> tuple[str, ...]:
+        """Codes selected by this notebook, without changing either preset."""
+        if self.region_preset == "large":
+            return self.large_region_state_codes
+        return self.medium_state_codes
+
+    @property
+    def region_state_label(self) -> str:
+        return ", ".join(self.region_state_codes)
+
+    @property
+    def region_extent(self) -> str:
+        return "territorial" if self.include_territorial_waters else "land"
+
+    @property
+    def region_extent_label(self) -> str:
+        return "Land and territorial waters" if self.include_territorial_waters else "Land only"
 
     @property
     def small_city_label(self) -> str:
@@ -257,7 +281,13 @@ def _overlapping_s3_prefixes(left: str, right: str) -> bool:
     return left_parts[:shortest] == right_parts[:shortest]
 
 
-def load_settings() -> LabSettings:
+def load_settings(
+    *, region_preset: str = "medium", include_territorial_waters: bool = True,
+) -> LabSettings:
+    if not isinstance(include_territorial_waters, bool):
+        raise ValueError("include_territorial_waters must be a boolean")
+    if region_preset not in ("medium", "large"):
+        raise ValueError("region_preset must be 'medium' or 'large'")
     cores = _positive_int("SEDONA_SPARK_LOCAL_CORES", 8)
     partitions = _positive_int("SEDONA_SPARK_PARTITIONS", cores * 2)
     if partitions < cores:
@@ -272,7 +302,20 @@ def load_settings() -> LabSettings:
     if bool(access_key) != bool(secret_key):
         raise ValueError("S3_ACCESS_KEY and S3_SECRET_KEY must be set together")
 
-    medium_state_codes = _medium_state_codes()
+    medium_state_codes = _state_codes("MEDIUM_STATE_CODES")
+    large_region_state_codes = ()
+    if os.getenv("LARGE_REGION_STATE_CODES", "").strip():
+        large_region_state_codes = _state_codes("LARGE_REGION_STATE_CODES")
+        missing = set(medium_state_codes) - set(large_region_state_codes)
+        if missing:
+            raise ValueError(
+                "LARGE_REGION_STATE_CODES must include every code in "
+                f"MEDIUM_STATE_CODES; missing: {sorted(missing)}"
+            )
+    if region_preset == "large" and not large_region_state_codes:
+        raise ValueError(
+            "LARGE_REGION_STATE_CODES is required when region_preset='large'"
+        )
     small_cities = _small_cities(medium_state_codes)
     derived_output_mode = os.getenv("DERIVED_OUTPUT_MODE", "s3").strip().lower()
     if derived_output_mode not in {"s3", "local"}:
@@ -286,6 +329,9 @@ def load_settings() -> LabSettings:
         shuffle_partitions=partitions,
         spark_local_dir=os.getenv("SEDONA_SPARK_LOCAL_DIR", "/var/tmp/spark"),
         medium_state_codes=medium_state_codes,
+        large_region_state_codes=large_region_state_codes,
+        region_preset=region_preset,
+        include_territorial_waters=include_territorial_waters,
         small_cities=small_cities,
         medium_sample_limit=_required_positive_int("MEDIUM_SAMPLE_LIMIT"),
         small_sample_limit=_required_positive_int("SMALL_SAMPLE_LIMIT"),

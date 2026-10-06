@@ -16,7 +16,20 @@ from overture_lab.spark import create_sedona
 from overture_lab.regions import resolve_scale_regions
 from overture_lab.lesson import inspect_type
 
-settings = load_settings()
+REGION_PRESET = "medium"  # choose "medium" or "large"
+INCLUDE_TERRITORIAL_WATERS = True  # False selects land-only country boundaries
+settings = load_settings(
+    region_preset=REGION_PRESET,
+    include_territorial_waters=INCLUDE_TERRITORIAL_WATERS,
+)
+display(
+    {
+        "region_preset": settings.region_preset,
+        "region_state_codes": settings.region_state_codes,
+        "include_territorial_waters": settings.include_territorial_waters,
+        "country_extent": settings.region_extent_label,
+    }
+)
 spark = create_sedona(settings, "03-base")
 regions = resolve_scale_regions(spark, settings)
 
@@ -57,7 +70,7 @@ for feature_type, item in lessons.items():
 # ## Which types intersect the configured small areas?
 #
 # A zero is a valid result for this scope—bathymetry, for example, need not
-# intersect the configured land areas. Each count is capped at
+# intersect the configured regional and city areas. Each count is capped at
 # `SMALL_SAMPLE_LIMIT` and
 # therefore reads “rows retained in the teaching sample,” not total rows.
 

@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same thirteen lessons support a read-only filesystem release
+Apache Sedona. The same fourteen lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -27,6 +27,7 @@ only collect explicitly bounded results for tables or maps.
 | `10_standalone_sedonaspark_clipped_roads` | Regional whole-road selection, named S3 exports, large maps |
 | `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
 | `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
+| `13_region_overview` | Medium, large, and city boundaries together, layer controls, city navigation, public or internal WMS |
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included
@@ -40,6 +41,53 @@ official 188 km corridor context is deliberately kept separate from full and
 route-scoped directional feature lengths. Static and interactive maps remain
 offline unless the optional internal WMS is configured, and the lesson never
 writes a derivative dataset.
+
+Notebook 13 compares `MEDIUM_STATE_CODES`, `LARGE_REGION_STATE_CODES`, and
+`SMALL_CITIES` on one interactive map. It requires the large-region configuration
+and reads only division data. Green shows large, purple medium, and orange cities
+with markers visible at regional scale. Checkboxes toggle each group and the
+background. Buttons fit large, medium, or the city selected in the dropdown;
+hover shows names, codes, and membership. These controls do not rerun Spark.
+
+Regional notebooks expose `INCLUDE_TERRITORIAL_WATERS = True` and pass it to
+`load_settings(include_territorial_waters=...)`. The default uses Overture's
+`is_territorial=true` country areas, including land and territorial waters.
+Set it to `False` and rerun to use `is_land=true` country areas instead. One
+extent is selected; overlapping land and territorial copies are not combined.
+Every configured country must resolve in the selected mode. No coastline buffer
+or boundary simplification is applied. See the
+[Overture division extent definitions](https://docs.overturemaps.org/guides/divisions/).
+
+This notebook setting controls regional filtering, map boundaries, and regional
+exports together. City selection stays land-only. Notebook 12 uses it only for
+the country-context map; Road 6's analytical scope and worldwide airport
+collection remain unchanged. The chosen mode appears in notebook summaries,
+the overview map and tooltips, existing derived-data manifests, and notebook 10's
+boundary export fields. Native feature schemas and named export layouts stay
+unchanged. There is no environment variable or browser toggle for this setting.
+
+Its notebook-local `BASEMAP_MODE` defaults to `"public_osm"`, using the public
+[terrestris OpenStreetMap WMS](https://terrestris.de/en/products/free-osm-wms/)
+(`https://ows.terrestris.de/osm/service`, `OSM-WMS`, `EPSG:3857`). Browser internet
+access is required, and the provider's attribution appears below the map.
+Choose `"configured"` to use the existing WMS environment settings and supply
+`CONFIGURED_WMS_ATTRIBUTION`, or `"none"` for a background-free offline map.
+Background failures leave the boundaries and controls available with a status
+message. Other notebooks keep their existing background behavior.
+
+Region and city borders are drawn without geometry simplification throughout
+the project. Before each map is drawn, a notification reports the number of
+coordinate positions sent to it, with per-layer counts for combined maps.
+Interactive maps also show this count above the map; overview visibility toggles
+update it. Counts include closing ring coordinates and repeated geometry in
+separate visible layers, exclude raster backgrounds, and cover the complete
+visible layers rather than only the current viewport. Full detail may take longer
+to render. Road and building simplification demonstrations remain separate.
+
+The overview never exports derived datasets.
+Its feature limit counts every rendered polygon and city marker, including
+countries appearing in both regional layers. If this exceeds `MAP_FEATURE_LIMIT`,
+the notebook fails clearly instead of silently excluding configured areas.
 
 ## QGIS style packs
 
@@ -132,6 +180,11 @@ Important variables are documented in `.env.example`. In particular:
   `SEDONA_SPARK_PARTITIONS` control the local Spark session.
 - `MEDIUM_STATE_CODES` is a required JSON string array. Its values match the
   Overture `country` field; for example, `["IL","XW","XG"]`.
+- `LARGE_REGION_STATE_CODES` is an optional JSON string array with the same
+  validation rules. When supplied, it must include every medium code. Both
+  environment examples include a 28-code large preset; adjust it if you
+  configure a different medium region. Blank or unset keeps medium-only
+  configurations working.
 - `SMALL_CITIES` is a required JSON array whose objects contain `name` and
   `state_code`, for example
   `[{"name":"City A","state_code":"AA"}]`. Names match English common names
@@ -149,6 +202,47 @@ Important variables are documented in `.env.example`. In particular:
   prefix separate from the immutable release. Set `DERIVED_OUTPUT_MODE=local`
   to write explicitly beneath the Compose-mapped
   `DERIVED_LOCAL_FALLBACK_DIR` instead.
+
+### Select a region within a notebook
+
+Notebooks 01–11 expose this setting before creating Spark:
+
+```python
+REGION_PRESET = "medium"  # choose "medium" or "large"
+INCLUDE_TERRITORIAL_WATERS = True
+settings = load_settings(
+    region_preset=REGION_PRESET,
+    include_territorial_waters=INCLUDE_TERRITORIAL_WATERS,
+)
+```
+
+Set `REGION_PRESET = "large"` and rerun the notebook from its configuration
+cell to select `LARGE_REGION_STATE_CODES`. Each notebook defaults to medium
+and displays its selected preset and codes. Selecting large without its
+configuration raises an error before Spark starts. After editing `.env`,
+recreate the lab container to pass the new variable to its notebook kernels.
+
+The supplied large preset retains `IL,XW,XG,XH,XZ,LB,SY,JO` and adds Egypt
+(`EG`), Cyprus (`CY`), Turkiye (`TR`), Iraq (`IQ`), Iran (`IR`), Saudi Arabia
+(`SA`), Kuwait (`KW`), Bahrain (`BH`), Qatar (`QA`), UAE (`AE`), Oman (`OM`),
+Sudan (`SD`), Eritrea (`ER`), Djibouti (`DJ`), Somalia (`SO`), and Yemen (`YE`).
+It also includes separately coded Bir Tawil (`XT`), Abyei (`XY`), Abu Musa
+(`XM`), and the Tunb islands (`XN`). Codes follow the configured Overture
+release, whose country areas must resolve in the selected extent mode for every
+selected code.
+
+`settings.region_state_codes` and `settings.region_state_label` describe the
+active selection; `settings.medium_state_codes` retains the medium definition.
+For compatibility, `ScaleRegions.medium`, `medium_bounds`, lesson `"medium"`
+keys, and `MEDIUM_SAMPLE_LIMIT` apply to the selected regional tier in either
+preset. City selection and its limits remain unchanged. A larger region does
+not increase browser collection limits, but full regional scans and exports
+can process substantially more data.
+
+Notebook 10 records the selected codes in its boundary export. Notebook 11
+uses `medium_state_runways` or `large_state_runways` as its runway dataset
+name; its airport collection remains worldwide. Notebook 12 retains its
+specific Road 6 corridor.
 
 ### Windows/WSL resource sizing
 
@@ -239,7 +333,8 @@ Diagnostics redact both credential values.
 
 ## Optional internal WMS background
 
-Interactive maps use an embedded renderer and no public basemap. To place an
+Interactive maps use an embedded renderer. Except for Notebook 13's explicit
+public-background default, they have no public basemap. To place an
 air-gap WMS below the bounded Overture vector layers, configure both values:
 
 ```dotenv
@@ -288,8 +383,9 @@ transportation segment column structure, without the lab-only `theme` and
 `feature_type` labels. Exact boundary intersection removes bbox false positives,
 but retained source segments are not clipped: crossing and boundary-touching
 LineStrings keep their complete native geometry and original source `bbox`.
-`boundary.geoparquet` contains the exact one-row configured land-country union
-used for selection, plus its configured state codes. Every selected road row is
+`boundary.geoparquet` contains the exact one-row configured country union
+used for selection, plus `state_codes`, `include_territorial_waters`, and
+`region_extent` metadata fields. Every selected road row is
 also written to CSV. Its columns are
 controlled by Notebook 10's `CSV_EXPORT_COLUMNS`, which defaults to `road_id`,
 `source_segment_id`, `road_class`, and quoted `geometry_wkt`. This serial
@@ -301,7 +397,7 @@ explicit allowlist of complete-airport classes, excluding related components
 such as terminals, runways, taxiways, aprons, gates, heliports, and airstrips.
 It retains the complete Infrastructure row and separately selects complete
 runway geometries (`subtype=airport`, `class=runway`) that intersect the
-configured medium-state land areas, using bbox pruning before the exact spatial
+selected regional country extent, using bbox pruning before the exact spatial
 predicate. Each enabled export has its own unique run prefix containing exactly
 one named GeoParquet object: `airports.geoparquet` or `runways.geoparquet`.
 Both use GeoParquet 1.1 bbox covering metadata and the same mandatory-S3,

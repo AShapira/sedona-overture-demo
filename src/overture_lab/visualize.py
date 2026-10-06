@@ -13,6 +13,62 @@ if TYPE_CHECKING:
     from overture_lab.config import WmsSettings
 
 
+def _coordinate_positions(coordinates) -> int:
+    if not coordinates:
+        return 0
+    if isinstance(coordinates[0], (int, float)):
+        return 1
+    return sum(_coordinate_positions(part) for part in coordinates)
+
+
+def geometry_coordinate_count(value) -> int:
+    """Count positions, including closing rings and duplicates, not x/y ordinates."""
+    if value is None:
+        return 0
+    if hasattr(value, "geometry"):
+        import shapely
+        return int(shapely.get_num_coordinates(value.geometry.array).sum())
+    if hasattr(value, "__geo_interface__"):
+        value = value.__geo_interface__
+    kind = value.get("type")
+    if kind == "FeatureCollection":
+        return sum(geometry_coordinate_count(item) for item in value["features"])
+    if kind == "Feature":
+        return geometry_coordinate_count(value.get("geometry"))
+    if kind == "GeometryCollection":
+        return sum(geometry_coordinate_count(item) for item in value["geometries"])
+    return _coordinate_positions(value.get("coordinates", []))
+
+
+def _coordinate_notice(counts: dict[str, int]) -> str:
+    detail = "; ".join(f"{label}: {count:,}" for label, count in counts.items())
+    return f"Drawing map: {sum(counts.values()):,} coordinate positions" + (
+        f" ({detail})." if detail else "."
+    )
+
+
+def notify_map_coordinates(layers: dict[str, object]) -> dict[str, int]:
+    """Notify before plotting the exact prepared vector frames for a static map."""
+    counts = {label: geometry_coordinate_count(data) for label, data in layers.items()}
+    print(_coordinate_notice(counts), flush=True)
+    return counts
+
+
+def deck_coordinate_counts(document: dict) -> dict[str, int]:
+    """Count the local GeoJSON and point layers used by the lab, excluding WMS."""
+    counts = {}
+    for index, layer in enumerate(document.get("layers", [])):
+        if not layer.get("visible", True):
+            continue
+        data = layer.get("data")
+        label = layer.get("id", f"Layer {index + 1}")
+        if isinstance(data, dict) and data.get("type"):
+            counts[label] = geometry_coordinate_count(data)
+        elif layer.get("@@type") in {"ScatterplotLayer", "TextLayer", "IconLayer"}:
+            counts[label] = len(data or [])
+    return counts
+
+
 def collect_geodataframe(df, limit: int, columns: list[str] | None = None):
     """Collect at most ``limit`` rows and decode geometry from WKB.
 
@@ -45,22 +101,24 @@ def static_geometry_plot(
     import matplotlib.pyplot as plt
 
     gdf = collect_geodataframe(df, limit=limit, columns=columns)
-    _, axis = plt.subplots(figsize=figsize)
-    if gdf.empty:
-        axis.text(0.5, 0.5, "No features in this scope", ha="center")
-        axis.set_axis_off()
-    else:
-        gdf.plot(
-            ax=axis,
-            column=column if column in gdf.columns else None,
-            legend=bool(column and column in gdf.columns),
-            markersize=8,
-            linewidth=0.8,
-            alpha=0.75,
-        )
-        axis.set_xlabel("longitude")
-        axis.set_ylabel("latitude")
-    axis.set_title(title or f"Bounded map (at most {limit:,} features)")
+    notify_map_coordinates({title or "Features": gdf})
+    with plt.rc_context({"path.simplify": False}):
+        _, axis = plt.subplots(figsize=figsize)
+        if gdf.empty:
+            axis.text(0.5, 0.5, "No features in this scope", ha="center")
+            axis.set_axis_off()
+        else:
+            gdf.plot(
+                ax=axis,
+                column=column if column in gdf.columns else None,
+                legend=bool(column and column in gdf.columns),
+                markersize=8,
+                linewidth=0.8,
+                alpha=0.75,
+            )
+            axis.set_xlabel("longitude")
+            axis.set_ylabel("latitude")
+        axis.set_title(title or f"Bounded map (at most {limit:,} features)")
     return gdf, axis
 
 
@@ -123,34 +181,65 @@ def _script_safe_json(value) -> str:
     )
 
 
-def _offline_deck_document(deck, bundle: str | None = None) -> str:
+def _offline_deck_document(
+    deck, bundle: str | None = None, *, controls: dict | None = None,
+    attribution: str = "",
+) -> str:
     """Create a self-contained deck.gl document without remote resource tags."""
-    deck_json = _script_safe_json(deck.to_json())
+    document = json.loads(deck.to_json())
+    coordinate_counts = deck_coordinate_counts(document)
+    coordinate_notice = _coordinate_notice(coordinate_counts)
+    print(coordinate_notice, flush=True)
+    deck_json = _script_safe_json(document)
     tooltip_json = _script_safe_json(getattr(deck, "_tooltip", True))
     renderer = bundle if bundle is not None else _installed_pydeck_bundle()
+    controls_script = ""
+    if controls is not None:
+        controls_script = (
+            Path(__file__).with_name("map_controls.js").read_text(encoding="utf-8")
+            + "\nsetupMapControls(deck, " + _script_safe_json(controls)
+            + ", coordinateCounts);"
+        )
     return f"""<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
   <meta name="referrer" content="no-referrer">
   <style>
-    html, body, #deck-container {{
+    html, body {{
       width: 100%;
       height: 100%;
       margin: 0;
       overflow: hidden;
       background: #f8fafc;
     }}
+    body {{ display: flex; flex-direction: column; font: 14px sans-serif; color: #172b3a; }}
+    #deck-container {{ position: relative; flex: 1; min-height: 0; width: 100%; }}
+    #map-toolbar {{ display: flex; flex-wrap: wrap; gap: 10px 16px; padding: 10px; }}
+    #map-toolbar:empty, #attribution:empty, #map-status:empty {{ display: none; }}
+    #map-toolbar label, #map-toolbar .control-group {{ display: flex; align-items: center; gap: 6px; }}
+    #map-toolbar select {{ max-width: 240px; min-width: 0; }}
+    #map-toolbar button, #map-toolbar select {{ font: inherit; padding: 5px 8px; }}
+    #map-toolbar .swatch {{ width: 12px; height: 12px; display: inline-block; }}
+    #attribution, #map-status {{ padding: 5px 10px; font-size: 12px; }}
+    #map-status {{ color: #8b290c; }}
+    #map-coordinate-notice {{ padding: 6px 10px; font-size: 12px; overflow-wrap: anywhere; }}
   </style>
   <script>{renderer}</script>
 </head>
 <body>
+  <div id="map-coordinate-notice" role="status" aria-live="polite">{escape(coordinate_notice)}</div>
+  <div id="map-toolbar" role="group" aria-label="Map controls"></div>
   <div id="deck-container"></div>
+  <div id="map-status" role="status" aria-live="polite"></div>
+  <div id="attribution">{escape(attribution)}</div>
   <script>
     const container = document.getElementById("deck-container");
     const jsonInput = {deck_json};
     const tooltip = {tooltip_json};
-    createDeck({{container, jsonInput, tooltip}});
+    const coordinateCounts = {_script_safe_json(coordinate_counts)};
+    const deck = createDeck({{container, jsonInput, tooltip}});
+    {controls_script}
   </script>
 </body>
 </html>"""
@@ -164,9 +253,12 @@ class _InlineHtml:
         return self.data
 
 
-def offline_deck_display(deck, width: str = "100%", height: int = 500):
+def offline_deck_display(
+    deck, width: str = "100%", height: int = 500, *,
+    controls: dict | None = None, attribution: str = "",
+):
     """Return an iframe whose renderer and map configuration are fully inline."""
-    document = _offline_deck_document(deck)
+    document = _offline_deck_document(deck, controls=controls, attribution=attribution)
     source = escape(document, quote=True)
     return _InlineHtml(
         f'<iframe title="Interactive map" srcdoc="{source}" '

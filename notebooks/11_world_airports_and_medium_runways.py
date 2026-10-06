@@ -7,7 +7,8 @@
 # **Outputs:** one named GeoParquet object for all worldwide airport-scale
 # infrastructure features and
 # one named GeoParquet object for complete runway geometries intersecting the
-# land-country areas in `MEDIUM_STATE_CODES`, when writing is enabled.
+# country areas selected by `REGION_PRESET` from `MEDIUM_STATE_CODES`
+# or `LARGE_REGION_STATE_CODES`, when writing is enabled.
 #
 # The worldwide airport predicate selects airport-scale infrastructure classes
 # and deliberately excludes related components such as terminals, runways,
@@ -22,11 +23,24 @@ from pyspark.sql import functions as F
 
 from overture_lab.config import load_settings
 from overture_lab.outputs import write_single_geoparquet
-from overture_lab.regions import Bounds, bbox_overlap, exact_intersection
+from overture_lab.regions import Bounds, bbox_overlap, exact_intersection, select_country_areas
 from overture_lab.spark import create_sedona, read_type
 
-settings = load_settings()
-spark = create_sedona(settings, "11-world-airports-and-medium-runways")
+REGION_PRESET = "medium"  # choose "medium" or "large"
+INCLUDE_TERRITORIAL_WATERS = True  # False selects land-only country boundaries
+settings = load_settings(
+    region_preset=REGION_PRESET,
+    include_territorial_waters=INCLUDE_TERRITORIAL_WATERS,
+)
+display(
+    {
+        "region_preset": settings.region_preset,
+        "region_state_codes": settings.region_state_codes,
+        "include_territorial_waters": settings.include_territorial_waters,
+        "country_extent": settings.region_extent_label,
+    }
+)
+spark = create_sedona(settings, "11-world-airports-and-regional-runways")
 metrics: list[dict[str, int | float | str]] = []
 AIRPORT_CLASSES = (
     "airport",
@@ -58,7 +72,7 @@ display(
             f"subtype = 'airport' AND class IN {AIRPORT_CLASSES}"
         ),
         "runway_predicate": "subtype = 'airport' AND class = 'runway'",
-        "medium_state_codes": list(settings.medium_state_codes),
+        "region_state_codes": list(settings.region_state_codes),
         "map_feature_limit": settings.map_feature_limit,
         "write_derived": settings.write_derived,
         "derived_output_mode": settings.derived_output_mode,
@@ -169,9 +183,9 @@ if airport_export.status == "written":
 display(airport_export.as_dict())
 
 # %% [markdown]
-# ## 4. Resolve the configured medium-region boundary
+# ## 4. Resolve the selected regional boundary
 #
-# Every configured code must match at least one land-country division area.
+# Every configured code must match at least one country division area.
 # Individual source bboxes support Parquet-friendly infrastructure pruning;
 # their union is used only for display.
 
@@ -179,10 +193,9 @@ display(airport_export.as_dict())
 started = time.perf_counter()
 division_areas = read_type(spark, settings, "divisions", "division_area")
 selected_regions = (
-    division_areas.where(
-        F.col("country").isin(*settings.medium_state_codes)
-        & (F.col("subtype") == "country")
-        & F.col("is_land")
+    select_country_areas(
+        division_areas, settings.region_state_codes,
+        include_territorial_waters=settings.include_territorial_waters,
     )
     .select(
         "country",
@@ -192,16 +205,7 @@ selected_regions = (
     .persist(StorageLevel.MEMORY_AND_DISK)
 )
 selected_region_count = selected_regions.count()
-actual_codes = {
-    row.country
-    for row in selected_regions.select("country").distinct().collect()
-}
-missing_codes = set(settings.medium_state_codes) - actual_codes
-if missing_codes:
-    raise RuntimeError(
-        "No land-country division area found for configured codes: "
-        f"{sorted(missing_codes)}"
-    )
+
 region_bounds = tuple(
     Bounds(row.xmin, row.ymin, row.xmax, row.ymax)
     for row in selected_regions.select(
@@ -303,7 +307,7 @@ runway_export = write_single_geoparquet(
     runways,
     spark,
     settings,
-    dataset_name="medium_state_runways",
+    dataset_name=f"{settings.region_preset}_state_runways",
     object_name="runways.geoparquet",
 )
 if runway_export.status == "written":
@@ -335,6 +339,7 @@ from overture_lab.visualize import (
     build_interactive_deck,
     collect_geodataframe,
     offline_deck_display,
+    notify_map_coordinates,
 )
 
 map_gdf = collect_geodataframe(
@@ -364,34 +369,37 @@ display(
 # %%
 import matplotlib.pyplot as plt
 
-_, axis = plt.subplots(figsize=(18, 12))
-boundary_gdf.boundary.plot(
-    ax=axis,
-    color="#111827",
-    linewidth=1.5,
-    zorder=2,
-)
-if map_gdf.empty:
-    axis.text(0.5, 0.5, "No runways in configured scope", ha="center")
-else:
-    map_gdf.plot(
+notify_map_coordinates({"Region boundary": boundary_gdf, "Runways": map_gdf})
+# Keep every vertex in Matplotlib rendering as well.
+with plt.rc_context({"path.simplify": False}):
+    _, axis = plt.subplots(figsize=(18, 12))
+    boundary_gdf.boundary.plot(
         ax=axis,
-        column="surface",
-        categorical=True,
-        legend=True,
-        linewidth=2.2,
-        alpha=0.85,
-        zorder=3,
+        color="#111827",
+        linewidth=1.5,
+        zorder=2,
     )
-axis.set_title(
-    "Airport runways intersecting the configured medium region\n"
-    f"{settings.medium_state_label}; full result {runway_count:,}, "
-    f"displayed at most {settings.map_feature_limit:,}"
-)
-axis.set_xlabel("longitude")
-axis.set_ylabel("latitude")
-axis.set_aspect("equal")
-plt.show()
+    if map_gdf.empty:
+        axis.text(0.5, 0.5, "No runways in configured scope", ha="center")
+    else:
+        map_gdf.plot(
+            ax=axis,
+            column="surface",
+            categorical=True,
+            legend=True,
+            linewidth=2.2,
+            alpha=0.85,
+            zorder=3,
+        )
+    axis.set_title(
+        f"Airport runways intersecting the {settings.region_preset} region\n"
+        f"{settings.region_state_label}; {settings.region_extent_label}; full result {runway_count:,}, "
+        f"displayed at most {settings.map_feature_limit:,}"
+    )
+    axis.set_xlabel("longitude")
+    axis.set_ylabel("latitude")
+    axis.set_aspect("equal")
+    plt.show()
 
 # %% [markdown]
 # ## 9. Offline interactive runway map

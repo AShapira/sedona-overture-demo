@@ -118,6 +118,7 @@ def main() -> int:
             pa.field("country", pa.string(), nullable=False),
             pa.field("subtype", pa.string(), nullable=False),
             pa.field("is_land", pa.bool_(), nullable=False),
+            pa.field("is_territorial", pa.bool_(), nullable=False),
             pa.field("geometry", pa.binary(), nullable=False),
             pa.field("bbox", bbox_type, nullable=False),
         ],
@@ -130,6 +131,7 @@ def main() -> int:
                 "country": "AA",
                 "subtype": "country",
                 "is_land": True,
+                "is_territorial": True,
                 "geometry": polygon_wkb(country_ring),
                 "bbox": bounds(country_ring),
             }

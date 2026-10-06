@@ -20,7 +20,20 @@ from overture_lab.spark import create_sedona, read_type
 from overture_lab.regions import resolve_scale_regions, bbox_overlap, exact_intersection
 from overture_lab.catalog import schema_table
 
-settings = load_settings()
+REGION_PRESET = "medium"  # choose "medium" or "large"
+INCLUDE_TERRITORIAL_WATERS = True  # False selects land-only country boundaries
+settings = load_settings(
+    region_preset=REGION_PRESET,
+    include_territorial_waters=INCLUDE_TERRITORIAL_WATERS,
+)
+display(
+    {
+        "region_preset": settings.region_preset,
+        "region_state_codes": settings.region_state_codes,
+        "include_territorial_waters": settings.include_territorial_waters,
+        "country_extent": settings.region_extent_label,
+    }
+)
 spark = create_sedona(settings, "05-divisions")
 regions = resolve_scale_regions(spark, settings)
 

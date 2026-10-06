@@ -16,7 +16,20 @@ from overture_lab.spark import create_sedona
 from overture_lab.regions import resolve_scale_regions
 from overture_lab.lesson import inspect_type
 
-settings = load_settings()
+REGION_PRESET = "medium"  # choose "medium" or "large"
+INCLUDE_TERRITORIAL_WATERS = True  # False selects land-only country boundaries
+settings = load_settings(
+    region_preset=REGION_PRESET,
+    include_territorial_waters=INCLUDE_TERRITORIAL_WATERS,
+)
+display(
+    {
+        "region_preset": settings.region_preset,
+        "region_state_codes": settings.region_state_codes,
+        "include_territorial_waters": settings.include_territorial_waters,
+        "country_extent": settings.region_extent_label,
+    }
+)
 spark = create_sedona(settings, "02-addresses")
 regions = resolve_scale_regions(spark, settings)
 lesson = inspect_type(
@@ -55,7 +68,7 @@ display(
 # %% [markdown]
 # ## Completeness is measured per field
 #
-# This is a profile of the configured medium sample, not a global or
+# This is a profile of the selected regional sample, not a global or
 # statistically representative quality score.
 
 # %%

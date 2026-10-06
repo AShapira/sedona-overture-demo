@@ -869,6 +869,10 @@ def write_derived(
         "release_uri": settings.release_uri,
         "run_id": run_id,
         "row_count": row_count,
+        "region_preset": settings.region_preset,
+        "region_state_codes": list(settings.region_state_codes),
+        "include_territorial_waters": settings.include_territorial_waters,
+        "region_extent": settings.region_extent,
     }
 
     if settings.derived_output_mode == "local":

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -24,6 +24,7 @@ from overture_lab.outputs import (  # noqa: E402
     is_permission_error,
     write_single_file_exports,
     write_single_geoparquet,
+    write_derived,
 )
 from overture_lab.regions import (  # noqa: E402
     Bounds,
@@ -56,6 +57,42 @@ def test_environment(**overrides: str) -> dict[str, str]:
 
 
 class ConfigurationTests(unittest.TestCase):
+    def test_country_extent_defaults_to_territorial_and_can_select_land(self):
+        with patch.dict(os.environ, test_environment(), clear=True):
+            settings = load_settings()
+            self.assertTrue(settings.include_territorial_waters)
+            self.assertEqual(settings.region_extent, "territorial")
+            self.assertTrue(settings.public_dict()["include_territorial_waters"])
+            land = load_settings(include_territorial_waters=False)
+            self.assertEqual(land.region_extent, "land")
+            self.assertEqual(land.small_cities, settings.small_cities)
+            self.assertEqual(land.region_state_codes, settings.region_state_codes)
+        for value in (None, "false", "true", 0, 1, [], {}):
+            with self.subTest(value=value), patch.dict(os.environ, {}, clear=True):
+                with self.assertRaisesRegex(ValueError, "must be a boolean"):
+                    load_settings(include_territorial_waters=value)
+
+    def test_derived_manifest_records_extent_without_changing_features(self):
+        with tempfile.TemporaryDirectory() as root:
+            for enabled in (True, False):
+                with patch.dict(os.environ, test_environment(
+                    WRITE_DERIVED="true", DERIVED_OUTPUT_MODE="local",
+                    DERIVED_LOCAL_FALLBACK_DIR=root, SEDONA_SCRATCH_DIR=root,
+                ), clear=True):
+                    settings = load_settings(include_territorial_waters=enabled)
+                dataframe = MagicMock()
+                dataframe.count.return_value = 1
+                with patch("overture_lab.outputs.scratch_status"), \
+                     patch("overture_lab.outputs._verify_spark_output"), \
+                     patch("overture_lab.outputs._run_id", return_value=str(enabled)), \
+                     patch("overture_lab.outputs._write_local_manifest") as manifest:
+                    write_derived(dataframe, MagicMock(), settings, dataset_name="sample")
+                metadata = manifest.call_args.args[1]
+                self.assertEqual(metadata["include_territorial_waters"], enabled)
+                self.assertEqual(metadata["region_extent"], settings.region_extent)
+                self.assertEqual(metadata["region_state_codes"], ["AA", "BB"])
+                dataframe.select.assert_not_called()
+
     def test_configured_limits_are_ordered_by_safety_boundary(self):
         with patch.dict(os.environ, test_environment(), clear=True):
             settings = load_settings()
@@ -107,6 +144,67 @@ class ConfigurationTests(unittest.TestCase):
                 ):
                     with self.assertRaisesRegex(ValueError, message):
                         load_settings()
+
+    def test_region_presets_select_codes_without_changing_medium_or_cities(self):
+        with patch.dict(
+            os.environ,
+            test_environment(LARGE_REGION_STATE_CODES='["AA","bb","cc"]'),
+            clear=True,
+        ):
+            medium = load_settings()
+            large = load_settings(region_preset="large")
+        self.assertEqual(medium.region_preset, "medium")
+        self.assertEqual(medium.region_state_codes, ("AA", "BB"))
+        self.assertEqual(large.region_state_codes, ("AA", "BB", "CC"))
+        self.assertEqual(large.large_region_state_codes, ("AA", "BB", "CC"))
+        self.assertEqual(large.medium_state_codes, medium.medium_state_codes)
+        self.assertEqual(large.medium_state_label, "AA, BB")
+        self.assertEqual(large.region_state_label, "AA, BB, CC")
+        self.assertEqual(large.small_cities, medium.small_cities)
+        self.assertEqual(large.medium_sample_limit, medium.medium_sample_limit)
+        self.assertEqual(large.public_dict()["region_preset"], "large")
+        self.assertEqual(
+            large.public_dict()["region_state_codes"], large.region_state_codes
+        )
+
+    def test_large_configuration_is_optional_until_selected(self):
+        for overrides in ({}, {"LARGE_REGION_STATE_CODES": "  "}):
+            with self.subTest(overrides=overrides), patch.dict(
+                os.environ, test_environment(**overrides), clear=True
+            ):
+                self.assertEqual(load_settings().region_state_codes, ("AA", "BB"))
+                with self.assertRaisesRegex(
+                    ValueError, "LARGE_REGION_STATE_CODES is required"
+                ):
+                    load_settings(region_preset="large")
+
+    def test_invalid_large_configuration_is_rejected_for_either_preset(self):
+        cases = (
+            ("not-json", "valid JSON"),
+            ("[]", "non-empty JSON array"),
+            ('{"AA": true}', "non-empty JSON array"),
+            ('["AA","BB","CCC"]', "two-letter state code"),
+            ('["AA","BB",12]', "must be a string"),
+            ('["AA","BB","aa"]', "duplicates"),
+            ('["AA","CC"]', "missing: .*BB"),
+        )
+        for preset in ("medium", "large"):
+            for value, message in cases:
+                with self.subTest(preset=preset, value=value), patch.dict(
+                    os.environ,
+                    test_environment(LARGE_REGION_STATE_CODES=value),
+                    clear=True,
+                ):
+                    with self.assertRaisesRegex(ValueError, message):
+                        load_settings(region_preset=preset)
+
+    def test_unknown_region_preset_is_rejected(self):
+        for preset in ("", "world", "Large", None):
+            with self.subTest(preset=preset), patch.dict(
+                os.environ, test_environment(), clear=True
+            ):
+                with self.assertRaisesRegex(ValueError, "region_preset must be"):
+                    load_settings(region_preset=preset)
 
     def test_invalid_limit_order_is_rejected(self):
         with patch.dict(
@@ -639,7 +737,7 @@ class ConfigurationTests(unittest.TestCase):
 
 class NotebookTests(unittest.TestCase):
     def test_expected_curriculum_exists_and_is_valid_json(self):
-        expected = [f"{number:02d}" for number in range(13)]
+        expected = [f"{number:02d}" for number in range(14)]
         found = sorted(path.name[:2] for path in (ROOT / "notebooks").glob("*.ipynb"))
         self.assertEqual(found, expected)
         for path in (ROOT / "notebooks").glob("*.ipynb"):
@@ -659,6 +757,7 @@ class NotebookTests(unittest.TestCase):
         for name in ("compose.yml", "compose.windows-s3-airgap.yml"):
             compose = (ROOT / name).read_text(encoding="utf-8")
             self.assertIn("MEDIUM_STATE_CODES:?", compose)
+            self.assertIn("LARGE_REGION_STATE_CODES:-", compose)
             self.assertIn("SMALL_CITIES:?", compose)
             self.assertIn("MEDIUM_SAMPLE_LIMIT:?", compose)
             self.assertIn("SMALL_SAMPLE_LIMIT:?", compose)
