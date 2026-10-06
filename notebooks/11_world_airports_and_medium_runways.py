@@ -88,7 +88,10 @@ display(
 # related Places or component infrastructure. The result keeps the complete
 # source schema, including names, source provenance and tags, class, subtype,
 # surface, feature version, source bbox, and the helper theme/type columns
-# added by this lab.
+# added by this lab. The additional `center_point` geometry copies point
+# features and uses the centroid for lines, polygons, and multipart features.
+# Centroids are calculated in the source EPSG:4326 coordinates and may fall
+# outside a polygon or off a line; the original `geometry` is retained.
 
 # %%
 started = time.perf_counter()
@@ -106,6 +109,13 @@ airports = (
             for column in infrastructure.columns
         ]
     )
+    .withColumn(
+        "center_point",
+        F.expr(
+            "CASE WHEN GeometryType(geometry) = 'POINT' THEN geometry "
+            "ELSE ST_SetSRID(ST_Centroid(geometry), 4326) END"
+        ),
+    )
     .persist(StorageLevel.MEMORY_AND_DISK)
 )
 airport_quality = airports.agg(
@@ -122,6 +132,18 @@ airport_quality = airports.agg(
             1,
         ).otherwise(0)
     ).alias("invalid_geometry_rows"),
+    F.sum(
+        F.when(
+            F.expr(
+                "center_point IS NULL "
+                "OR ST_IsEmpty(center_point) "
+                "OR NOT ST_IsValid(center_point) "
+                "OR GeometryType(center_point) <> 'POINT' "
+                "OR ST_SRID(center_point) <> 4326"
+            ),
+            1,
+        ).otherwise(0)
+    ).alias("invalid_center_point_rows"),
 ).first()
 airport_count = int(airport_quality.airport_rows)
 if airport_count != int(airport_quality.distinct_airport_ids):
@@ -130,6 +152,11 @@ if int(airport_quality.invalid_geometry_rows or 0) != 0:
     raise RuntimeError(
         "Worldwide airport selection contains "
         f"{airport_quality.invalid_geometry_rows} invalid geometries"
+    )
+if int(airport_quality.invalid_center_point_rows or 0) != 0:
+    raise RuntimeError(
+        "Worldwide airport selection contains "
+        f"{airport_quality.invalid_center_point_rows} invalid center points"
     )
 record_metric("worldwide airport selection", airport_count, started)
 display(airport_quality.asDict())
@@ -158,6 +185,13 @@ airports.groupBy(F.expr("GeometryType(geometry)").alias("geometry_type")).agg(
     F.count("*").alias("airports")
 ).orderBy(F.desc("airports"), "geometry_type").show(truncate=False)
 
+airports.select(
+    "id",
+    "names.primary",
+    F.expr("GeometryType(geometry)").alias("geometry_type"),
+    "center_point",
+).show(20, truncate=False)
+
 # %% [markdown]
 # ## 3. Optionally export one worldwide-airports GeoParquet object
 #
@@ -167,6 +201,7 @@ airports.groupBy(F.expr("GeometryType(geometry)").alias("geometry_type")).agg(
 # run prefix, writes one Zstandard GeoParquet 1.1 object named
 # `airports.geoparquet`, and validates the full schema, row count,
 # geometry/SRID, bbox covering metadata, and exact one-object inventory. The
+# export includes both `geometry` (primary) and `center_point` geometries. The
 # selected target never falls back to the other target after a failure.
 
 # %%

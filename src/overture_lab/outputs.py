@@ -279,7 +279,13 @@ def _verify_single_geoparquet(
     written = spark.read.format("geoparquet").load(geoparquet_uri)
     actual_columns = tuple(written.columns)
     expected_types = dict(expected_schema)
-    required_columns = set(expected_types) | {"geometry_bbox"}
+    # Sedona's automatic covering adds a bbox for every GeometryUDT column.
+    geometry_columns = {
+        name for name, datatype in expected_schema
+        if datatype == expected_types["geometry"]
+    }
+    covering_columns = {f"{name}_bbox" for name in geometry_columns}
+    required_columns = set(expected_types) | covering_columns
     if (
         len(actual_columns) != len(required_columns)
         or set(actual_columns) != required_columns
@@ -291,7 +297,7 @@ def _verify_single_geoparquet(
     actual_types = {
         field.name: field.dataType.json()
         for field in written.schema.fields
-        if field.name != "geometry_bbox"
+        if field.name not in covering_columns
     }
     if actual_types != expected_types:
         raise RuntimeError(
@@ -332,20 +338,21 @@ def _verify_single_geoparquet(
         )
     primary_column = metadata.get("primary_column")
     columns_metadata = metadata.get("columns", {})
-    geometry_metadata = (
-        columns_metadata.get(primary_column, {})
-        if isinstance(columns_metadata, dict)
-        else {}
-    )
-    bbox_covering = geometry_metadata.get("covering", {}).get("bbox", {})
-    expected_covering = {
-        axis: ["geometry_bbox", axis]
-        for axis in ("xmin", "ymin", "xmax", "ymax")
-    }
-    if primary_column != "geometry" or bbox_covering != expected_covering:
+    if primary_column != "geometry" or not isinstance(columns_metadata, dict):
         raise RuntimeError(
             "GeoParquet output has no valid geometry_bbox covering metadata"
         )
+    for name in sorted(geometry_columns):
+        geometry_metadata = columns_metadata.get(name, {})
+        bbox_covering = geometry_metadata.get("covering", {}).get("bbox", {})
+        expected_covering = {
+            axis: [f"{name}_bbox", axis]
+            for axis in ("xmin", "ymin", "xmax", "ymax")
+        }
+        if bbox_covering != expected_covering:
+            raise RuntimeError(
+                f"GeoParquet output has no valid {name}_bbox covering metadata"
+            )
 
     run = spark._jvm.org.apache.hadoop.fs.Path(run_prefix)
     filesystem = run.getFileSystem(spark._jsc.hadoopConfiguration())
