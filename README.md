@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same fourteen lessons support a read-only filesystem release
+Apache Sedona. The same fifteen lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -28,6 +28,7 @@ only collect explicitly bounded results for tables or maps.
 | `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
 | `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
 | `13_region_overview` | Medium, large, and city boundaries together, layer controls, city navigation, public or internal WMS |
+| `14_landmass_and_oceans` | Physical coastline surfaces, exact world/regional GeoParquet exports, coverage diagnostics and offline previews |
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included
@@ -101,6 +102,78 @@ scale-aware labels, a schema validator, and bounded test-data tooling.
 See the [schema 1.18.0 QGIS guide](qgis/schema-1.18.0/README.md) before applying
 a style. Real-data test extracts and native render evidence stay under ignored
 artifacts and are never committed.
+
+## Physical landmass and ocean analysis
+
+Notebook 14 reads `base/land` with `subtype='land' AND class='land'` and
+`base/water` with `subtype='ocean'`. These are coastline-derived physical
+surfaces. Inland lakes remain inside the landmass mask; named ocean/sea points,
+other water features, land cover, and political territories are not substitutes.
+The [Overture water schema](https://docs.overturemaps.org/schema/reference/base/water/)
+describes the relationship between these surface classes.
+
+The lesson profiles the configured release and stops if a required class is
+absent or selected geometry is invalid. It preserves native worldwide polygon
+pieces, then clips a regional copy to the combined bounding rectangle of the
+configured country extents. `REGION_PRESET` and `INCLUDE_TERRITORIAL_WATERS`
+affect that rectangle only. Intervening ocean and neighboring land inside it
+are included. Wrapped or greater-than-180-degree regional rectangles must be
+split explicitly; the worldwide dataset retains the original dateline/polar
+geometry. Piece counts do not measure the number of continents or oceans.
+
+With `WRITE_DERIVED=true`, the existing output settings create one named file
+per scope: `world_surfaces.geoparquet` and `regional_surfaces.geoparquet`, each
+under its own unique `<scope>_surfaces/release=<release>/run=<id>/` directory.
+S3 remains the default; set `DERIVED_OUTPUT_MODE=local` explicitly for local
+output. No single-file export falls back to another target. The final writer
+is serial, so the global export needs additional time and disk. The notebook
+reports measured bytes and elapsed time rather than predicting its size.
+
+Files contain `surface`, source ID/version/type/filter, original `sources`,
+release/URI, scope/extent, geometry policy, `bbox`, and exact `geometry`.
+Both scopes recompute their bboxes from geometry; source pruning boxes are
+rounded outward and are not exact coordinate extrema.
+GeoParquet 1.1 adds `geometry_bbox` covering metadata. No display sampling or
+simplification affects exports. Read-back validates the schema, counts,
+geometry, bounding boxes, and fingerprints of every row, including provenance.
+Missing source attribution is reported and preserved. This derived schema is
+an analytical projection, not a replacement for the complete source schemas.
+
+Reload either printed URI later with the same configured Sedona session:
+
+```python
+surfaces = spark.read.format("geoparquet").load(saved_uri)
+ocean = surfaces.where("surface = 'ocean'")
+landmass = surfaces.where("surface = 'landmass'")
+# points has a geographic geometry column named point_geometry:
+matches = points.join(surfaces, F.expr("ST_Intersects(point_geometry, geometry)"))
+```
+
+Use bbox pruning before spatial joins where possible. A point on the shared
+coast can match both classes; define a boundary tie policy for your analysis.
+Use geodesic or equal-area calculations for physical areas. The notebook's
+small-window overlap/gap diagnostics use square degrees solely to detect
+topology discrepancies, never fill them, and do not certify global coverage.
+The world overview classifies the centers of a 2-degree grid (16,200 scalar
+results, maximum 20,000). Cell colors represent their centers, not whole-cell
+coverage; small islands can disappear. Uncovered/ambiguous centers stay visible.
+Regional previews label incomplete samples; white preview space does not imply
+absent source data. Feature and coordinate limits apply only to display copies.
+
+Geometry and export regression checks run inside the pinned Sedona runtime:
+
+```bash
+python3 tests/check_surfaces_spark.py --output /tmp/surface-check
+# With a configured test S3 endpoint and DERIVED_OUTPUT_URI:
+python3 tests/check_surfaces_spark.py --output /tmp/surface-check-s3 --s3
+# Or start an isolated disposable MinIO fixture using Podman:
+bash scripts/test-surfaces-s3.sh
+```
+
+These checks include islands, lakes, holes, clipping, gaps/overlap, empty
+extracts, invalid geometry, dateline/polar pieces, local/S3 read-back, and
+injected permission-denial/interrupted-write failures. Keep attribution from
+the source release when reusing or sharing the derived data.
 
 ## Start with a local release
 
