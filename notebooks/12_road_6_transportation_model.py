@@ -1306,6 +1306,18 @@ minx, miny, maxx, maxy = route_map_gdf.total_bounds
 span = max(maxx - minx, maxy - miny, 0.01)
 initial_zoom = max(5.0, min(12.0, math.log2(360.0 / span) - 1.0))
 
+# GeoJSON's top-level id is a display index, not the source segment ID.
+route_map_gdf["source_id"] = route_map_gdf["id"]
+route_map_gdf["tooltip_text"] = route_map_gdf.apply(lambda row: (
+    f"{row['name']}\nsegment: {row['source_id']}\ndirection: {row['direction']}\n"
+    f"order: {row['route_order']}\nlength: {row['length_m']} m\n"
+    f"route range: {row['route_range']}\nconnectors: {row['connector_count']}\n"
+    f"speed: {row['speed_summary']}\nflags: {row['flag_summary']}\n"
+    f"sources: {row['source_records']}"
+), axis=1)
+connector_map_gdf["tooltip_text"] = connector_map_gdf["connector_id"].map(
+    lambda value: f"Road 6 connector: {value}"
+)
 route_layer = pdk.Layer(
     "GeoJsonLayer",
     route_map_gdf.__geo_interface__,
@@ -1349,17 +1361,7 @@ overview_deck = build_interactive_deck(
         zoom=initial_zoom,
     ),
     wms=settings.wms,
-    tooltip={
-        "html": (
-            "<b>{name}</b><br/>"
-            "segment: {id}<br/>direction: {direction}<br/>"
-            "order: {route_order}<br/>length: {length_m} m<br/>"
-            "route range: {route_range}<br/>"
-            "connectors: {connector_count}<br/>speed: {speed_summary}<br/>"
-            "flags: {flag_summary}<br/>sources: {source_records}<br/>"
-            "connector: {connector_id}"
-        )
-    },
+    tooltip={"text": "{tooltip_text}"},
 )
 offline_deck_display(overview_deck, height=720)
 
@@ -1465,6 +1467,16 @@ with plt.rc_context({"path.simplify": False}):
     axis.legend()
     plt.show()
 
+detail_gdf["source_id"] = detail_gdf["id"]
+detail_gdf["tooltip_text"] = detail_gdf.apply(lambda row: (
+    f"{row['name']}\nsegment: {row['source_id']}\nclass: {row['class']}\n"
+    f"Road 6: {row['is_road_6']}\ndirection: {row['direction']}\n"
+    f"connector direction: {row['is_focus_direction']}\n"
+    f"shares connector: {row['connected_to_focus']}"
+), axis=1)
+focus_connector_gdf["tooltip_text"] = focus_connector_gdf["connector_id"].map(
+    lambda value: f"Selected connector: {value}"
+)
 detail_layer = pdk.Layer(
     "GeoJsonLayer",
     detail_gdf.__geo_interface__,
@@ -1495,14 +1507,7 @@ detail_deck = build_interactive_deck(
         zoom=13.5,
     ),
     wms=settings.wms,
-    tooltip={
-        "html": (
-            "<b>{name}</b><br/>segment: {id}<br/>class: {class}<br/>"
-            "Road 6: {is_road_6}<br/>direction: {direction}<br/>"
-            "connector direction: {is_focus_direction}<br/>shares connector: "
-            "{connected_to_focus}<br/>connector: {connector_id}"
-        )
-    },
+    tooltip={"text": "{tooltip_text}"},
 )
 offline_deck_display(detail_deck, height=620)
 

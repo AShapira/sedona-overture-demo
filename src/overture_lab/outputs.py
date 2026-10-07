@@ -507,10 +507,18 @@ def _verify_single_file_exports(
                     "OR ST_Length(geometry) <= 0 "
                     "OR ST_SRID(geometry) <> 4326 "
                     "OR bbox IS NULL "
-                    "OR bbox.xmin <> ST_XMin(geometry) "
-                    "OR bbox.ymin <> ST_YMin(geometry) "
-                    "OR bbox.xmax <> ST_XMax(geometry) "
-                    "OR bbox.ymax <> ST_YMax(geometry)"
+                    # Source pruning boxes can be rounded outward. Preserve
+                    # them, requiring containment rather than exact equality.
+                    "OR bbox.xmin IS NULL OR bbox.ymin IS NULL "
+                    "OR bbox.xmax IS NULL OR bbox.ymax IS NULL "
+                    "OR isnan(bbox.xmin) OR isnan(bbox.ymin) "
+                    "OR isnan(bbox.xmax) OR isnan(bbox.ymax) "
+                    "OR bbox.xmin < -180 OR bbox.xmax > 180 "
+                    "OR bbox.ymin < -90 OR bbox.ymax > 90 "
+                    "OR bbox.xmin > ST_XMin(geometry) "
+                    "OR bbox.ymin > ST_YMin(geometry) "
+                    "OR bbox.xmax < ST_XMax(geometry) "
+                    "OR bbox.ymax < ST_YMax(geometry)"
                 ),
                 1,
             ).otherwise(0)

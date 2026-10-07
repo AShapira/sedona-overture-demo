@@ -240,6 +240,7 @@ selected_regions = (
     .persist(StorageLevel.MEMORY_AND_DISK)
 )
 selected_region_count = selected_regions.count()
+actual_codes = {row.country for row in selected_regions.select("country").distinct().collect()}
 
 region_bounds = tuple(
     Bounds(row.xmin, row.ymin, row.xmax, row.ymax)
@@ -466,6 +467,8 @@ minx, miny, maxx, maxy = boundary_gdf.total_bounds
 span = max(maxx - minx, maxy - miny, 0.01)
 initial_zoom = max(2.0, min(13.0, math.log2(360.0 / span) - 1.0))
 
+# GeoJSON's top-level id is a display index; keep the source ID unambiguous.
+map_gdf["source_id"] = map_gdf["id"]
 runway_layer = pdk.Layer(
     "GeoJsonLayer",
     map_gdf.__geo_interface__,
@@ -495,9 +498,9 @@ deck = build_interactive_deck(
     ),
     wms=settings.wms,
     tooltip={
-        "html": (
-            "<b>{name}</b><br/>runway: {id}<br/>"
-            "surface: {surface}<br/>geometry: {geometry_type}"
+        "text": (
+            "{name}\nrunway: {source_id}\n"
+            "surface: {surface}\ngeometry: {geometry_type}"
         )
     },
 )

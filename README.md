@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same fifteen lessons support a read-only filesystem release
+Apache Sedona. The same seventeen lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -29,6 +29,99 @@ only collect explicitly bounded results for tables or maps.
 | `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
 | `13_region_overview` | Medium, large, and city boundaries together, layer controls, city navigation, public or internal WMS |
 | `14_landmass_and_oceans` | Physical coastline surfaces, exact world/regional GeoParquet exports, coverage diagnostics and offline previews |
+| `15_world_countries` | Worldwide land-country polygons, offline interactive map, one full-resolution local or S3 GeoParquet file |
+| `16_region_ports` | Regional port sites/candidates and maritime components, interactive map, one local GeoParquet file |
+
+Notebook 16 uses the configured medium region (or the editable large preset),
+including territorial waters by default. It scans Base land use, infrastructure,
+water, and Places without an analytical sample limit. Explicit classifications
+and maritime tags are separated from name-based candidates; piers, quays,
+breakwaters, and docks are labelled components, not counted as separate ports.
+Discovery rules are editable; the defaults include English, Hebrew, and Arabic
+names. Coverage is limited by the selected release and matching vocabulary.
+
+Running notebook 16 writes `exports/region_ports.geoparquet` by default,
+independently of `WRITE_DERIVED`. Set `WRITE_PORTS=False` for a no-export run,
+choose another `OUTPUT_PATH`, or explicitly set `OVERWRITE=True` to replace an
+existing result. The file preserves complete source geometries and discovery
+evidence. The interactive map shows every selected feature or stops at its
+explicit `MAP_FEATURE_LIMIT`; that display limit never truncates the export.
+The map defaults to offline vectors; choose `BASEMAP_MODE="configured"` for
+the internal WMS or `"public_osm"` for public background imagery. Validate with
+`python3 tests/check_ports_spark.py --output .artifacts/ports-validation-new`
+inside the pinned lab container. This uses generated data and also executes the
+complete notebook; use a fresh validation output directory for each run.
+
+Notebook 15 selects all `divisions/division_area` features with
+`subtype='country' AND is_land=true`, independently of regional presets.
+Source country-level territories, disputed representations, IDs, attributes,
+holes, and multipart geometry are retained. Its offline interactive map provides
+pan, zoom, and name/code/ID tooltips, with topology-preserving simplification
+only for display; features whose simplified geometry is invalid retain their
+original geometry in the preview. Feature and coordinate budgets fail explicitly
+rather than silently omit countries; adjust `MAP_TOLERANCE`, `MAP_COORDINATE_LIMIT`, or the
+environment's `MAP_FEATURE_LIMIT` if needed.
+
+Set `S3_OUTPUT_URI` and `WRITE_COUNTRIES=True` in the notebook configuration
+cell, or configure `DERIVED_OUTPUT_URI` and `WRITE_DERIVED=true` in the lab
+environment. Endpoint, credential, and transport settings use the existing
+`S3_*` environment variables; never put credentials in the notebook. Restart
+the kernel after changing S3 settings. With no destination, map exploration
+still works and export reports the missing configuration. Each enabled export
+creates a unique run prefix containing exactly one `countries.geoparquet`, with
+full-resolution source geometry, GeoParquet 1.1 metadata, Zstandard compression,
+and a bbox covering column. The notebook prints the verified URI and row count.
+Run `bash scripts/test-countries-s3.sh` for an isolated generated-data S3 test;
+reports are retained under `.artifacts/countries-validation/`.
+
+For local country exports, select `OUTPUT_MODE="local"` in notebook 15 or set
+`DERIVED_OUTPUT_MODE=local`, then enable `WRITE_COUNTRIES`/`WRITE_DERIVED`.
+The shared `DERIVED_LOCAL_FALLBACK_DIR` must be inside `SEDONA_SCRATCH_DIR`;
+use host-mounted directories to retain files after a container exits. Local
+mode does not require an S3 destination and never writes to S3.
+
+### Full-data local validation of notebooks 10–16
+
+With Podman, the pinned lab image, and the non-secret region settings in `.env`:
+
+```bash
+python3 scripts/validate-notebooks.py \
+  --release-dir /absolute/path/to/overture/release/2026-07-22.0
+```
+
+The runner uses the large regional preset and territorial waters, retaining the
+worldwide and Road 6 scopes. It executes every cell in a fresh, network-disabled
+container, reads the source release through a read-only mount, and writes exports,
+executed notebooks, HTML maps, logs, effective configuration, source hashes, and
+read-back reports below `.artifacts/notebooks-10-16/<run-id>/`. Export verification
+compares complete attribute/geometry multisets, including duplicate rows. Browser
+checks are a separate step using `scripts/check-notebook-maps.cjs` and Playwright.
+Pass the successful attempt directories to the browser checker, for example:
+
+```bash
+PLAYWRIGHT_MODULE=/absolute/path/to/node_modules/playwright \
+  node scripts/check-notebook-maps.cjs \
+  .artifacts/notebooks-10-16/<run-id>/10-attempt-1
+```
+
+It retains screenshots and `browser-report.json` beside each map and fails on
+rendering, interaction, tooltip, or external-network errors.
+
+Notebooks run sequentially with 12 Spark cores and 48 shuffle partitions. Memory
+is capped at 36 GiB per container and 24 GiB for the driver, reduced to leave at
+least 6 GiB available to the host. The runner refuses to start below its minimum
+memory threshold; close unused kernels before invoking it. Existing services and
+exports are not replaced. The scratch budget is a soft 100 GiB check with a
+20 GiB free-space reserve, not a filesystem quota.
+
+Use `--notebooks 15 16` to rerun selected lessons and `--run-dir` to retain new
+attempts under an existing artifact directory. Every attempt uses a fresh
+directory. `--timeout` is a per-cell limit (default 7,200 seconds).
+`--ports-map-limit` defaults to 50,000; countries and ports fail if their complete
+map exceeds its budget, while other lessons retain their documented display
+sampling. Display limits never truncate analytical exports. Notebook defaults
+and saved source files are not changed by execution. A failed notebook stops
+the invocation and retains its partial outputs and traceback.
 
 Each notebook is stored both as a reviewable `py:percent` source and a standard
 `.ipynb`. The `.ipynb` files are generated deterministically by the included

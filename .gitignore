@@ -2,6 +2,7 @@
 .env.windows-s3-airgap
 .cache/
 .artifacts/
+exports/
 __pycache__/
 *.py[cod]
 .ipynb_checkpoints/

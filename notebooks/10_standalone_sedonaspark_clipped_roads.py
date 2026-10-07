@@ -141,6 +141,7 @@ selected_regions = (
     .persist(StorageLevel.MEMORY_AND_DISK)
 )
 selected_region_count = selected_regions.count()
+actual_codes = {row.country for row in selected_regions.select("country").distinct().collect()}
 
 region_bounds = tuple(
     Bounds(row.xmin, row.ymin, row.xmax, row.ymax)

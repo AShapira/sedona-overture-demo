@@ -67,7 +67,7 @@ function setupMapControls(map, spec, coordinateCounts) {
     }});
     return true;
   }
-  for (const id of ["large", "medium"]) {
+  for (const id of Object.keys(spec.views)) {
     const button = document.createElement("button");
     button.type = "button";
     button.dataset.view = id;
@@ -75,29 +75,31 @@ function setupMapControls(map, spec, coordinateCounts) {
     button.addEventListener("click", () => fit(spec.views[id]));
     toolbar.appendChild(button);
   }
-  const cityGroup = document.createElement("div");
-  cityGroup.className = "control-group";
-  const cityLabel = document.createElement("label");
-  cityLabel.htmlFor = "map-city";
-  cityLabel.textContent = "City";
-  const citySelect = document.createElement("select");
-  citySelect.id = "map-city";
-  for (const city of spec.cities) {
-    const option = document.createElement("option");
-    option.value = city.id;
-    option.textContent = city.label;
-    citySelect.appendChild(option);
+  if (spec.cities.length) {
+    const cityGroup = document.createElement("div");
+    cityGroup.className = "control-group";
+    const cityLabel = document.createElement("label");
+    cityLabel.htmlFor = "map-city";
+    cityLabel.textContent = "City";
+    const citySelect = document.createElement("select");
+    citySelect.id = "map-city";
+    for (const city of spec.cities) {
+      const option = document.createElement("option");
+      option.value = city.id;
+      option.textContent = city.label;
+      citySelect.appendChild(option);
+    }
+    const cityButton = document.createElement("button");
+    cityButton.type = "button";
+    cityButton.dataset.view = "city";
+    cityButton.textContent = "Zoom to city";
+    cityButton.addEventListener("click", () => {
+      const city = spec.cities.find(item => item.id === citySelect.value);
+      if (city) fit(city.bounds);
+    });
+    cityGroup.append(cityLabel, citySelect, cityButton);
+    toolbar.appendChild(cityGroup);
   }
-  const cityButton = document.createElement("button");
-  cityButton.type = "button";
-  cityButton.dataset.view = "city";
-  cityButton.textContent = "Zoom to city";
-  cityButton.addEventListener("click", () => {
-    const city = spec.cities.find(item => item.id === citySelect.value);
-    if (city) fit(city.bounds);
-  });
-  cityGroup.append(cityLabel, citySelect, cityButton);
-  toolbar.appendChild(cityGroup);
 
   map.setProps({onError: (error, layer) => {
     const backgroundError = backgroundGroup && layer &&
@@ -116,7 +118,7 @@ function setupMapControls(map, spec, coordinateCounts) {
   }});
   let attempts = 0;
   function fitWhenReady() {
-    if (!fit(spec.views.large) && ++attempts < 120) requestAnimationFrame(fitWhenReady);
+    if (!fit(Object.values(spec.views)[0]) && ++attempts < 120) requestAnimationFrame(fitWhenReady);
   }
   requestAnimationFrame(fitWhenReady);
 }
