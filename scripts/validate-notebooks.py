@@ -46,9 +46,10 @@ def worker(number, destination, timeout):
     for cell in notebook.cells:
         if cell.cell_type == "code":
             cell.source = assignments(cell.source, {
-                "REGION_PRESET": repr("large"), "INCLUDE_TERRITORIAL_WATERS": "True",
+                "REGION_PRESET": repr("medium" if number == 17 else "large"), "INCLUDE_TERRITORIAL_WATERS": "True",
                 "BASEMAP_MODE": repr("none"), "OVERWRITE": "False",
                 "OUTPUT_PATH": "Path('/results/exports/region_ports.geoparquet')",
+                "WRITE_ROADS": "True",
             })
             cell.outputs, cell.execution_count = [], None
     notebook.cells.insert(0, nbformat.v4.new_code_cell(
@@ -70,7 +71,7 @@ def worker(number, destination, timeout):
         if hashes() != initial:
             raise RuntimeError("Validation source changed during execution")
         records = json.loads((destination / "exports-validation.json").read_text())
-        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 2, 15: 1, 16: 1}[number]
+        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 2, 15: 1, 16: 1, 17: 1}[number]
         if len(records) != expected_exports:
             raise AssertionError(f"Expected {expected_exports} validated exports, found {len(records)}")
         report.update(status="passed", exports=records)
@@ -142,6 +143,8 @@ def host(args):
                 SEDONA_SPARK_LOCAL_DIR="/results/scratch", SEDONA_SPARK_LOCAL_CORES="12",
                 SEDONA_SPARK_DRIVER_MEMORY=f"{driver}g", SEDONA_SPARK_PARTITIONS="48", SEDONA_SPARK_LOG_LEVEL="ERROR",
                 RELEASE_INVENTORY_CACHE="/results/inventory", MPLCONFIGDIR="/results/matplotlib")
+            if number == 17:
+                environment["ROAD_RECONSTRUCTION_EVIDENCE_DIR"] = "/results/reconstruction"
             # Ports must render every feature. Other notebooks retain their native display cap.
             if number == 16:
                 environment.update(MAP_FEATURE_LIMIT=str(args.ports_map_limit),
@@ -180,10 +183,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir")
     parser.add_argument("--run-dir", type=Path)
-    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 17), default=list(range(10, 17)))
+    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 18), default=list(range(10, 18)))
     parser.add_argument("--ports-map-limit", type=int, default=50_000)
     parser.add_argument("--timeout", type=int, default=7200, help="Per-cell timeout in seconds")
-    parser.add_argument("--worker", type=int, choices=range(10, 17), help=argparse.SUPPRESS)
+    parser.add_argument("--worker", type=int, choices=range(10, 18), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker is not None:
         worker(args.worker, Path("/results"), args.timeout)

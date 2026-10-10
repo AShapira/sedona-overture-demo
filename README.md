@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same seventeen lessons support a read-only filesystem release
+Apache Sedona. The same eighteen lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -31,6 +31,55 @@ only collect explicitly bounded results for tables or maps.
 | `14_landmass_and_oceans` | Physical coastline surfaces, exact world/regional GeoParquet exports, coverage diagnostics and offline previews |
 | `15_world_countries` | Worldwide land-country polygons, offline interactive map, one full-resolution local or S3 GeoParquet file |
 | `16_region_ports` | Regional port sites/candidates and maritime components, interactive map, one local GeoParquet file |
+| `17_reconstructing_major_roads` | Complete medium-region motorway/trunk/primary carriageways, Road 6 before/after, source membership, diagnostics, optional GeoParquet |
+
+Notebook 17 reconstructs connected main carriageways without sampling the
+analytical input. It excludes links, preserves source shape vertices, evaluates
+heading rules, and joins only mutually unique compatible connector continuations.
+Wikidata and network/ref identities take precedence over names; unnamed roads
+use conservative same-class topology. Shared route memberships do not duplicate
+geometry. Ambiguous branches, identity changes and unresolved direction remain
+separate. The result is for analysis/cartography, not routing or access decisions.
+
+The medium-region investigation on release `2026-07-22.0` found 78,251 main-road
+segments. Only 3,832 contain route metadata, so inferred chains are labelled
+separately. Road 6 must become two lines: 63 source segments northbound
+(193.255 km) and 60 southbound (194.204 km), excluding its interchange link.
+The validated reconstruction yields 14,485 features (352 motorway, 4,721 trunk,
+9,412 primary), an 81.49% reduction while preserving all 494,889 main-road source
+vertices. The Road 6 maps share a carriageway-detail view; the reconstructed
+map has separate direction toggles.
+Undivided roads remain one bidirectional feature; absence of a heading restriction
+is explicitly treated as a bidirectional assumption. Whole intersecting segments
+are retained, with region-limited continuity reported in diagnostics.
+
+`reconstruct_major_roads` returns roads, membership, diagnostics, and summary
+counts. Caps of 200,000 segments, 1,000,000 connector references, 2,000,000 vertices,
+and 400,000 atomic pieces fail rather than truncate. Map limits affect only
+display. `WRITE_ROADS=False` by default; enable it alongside `WRITE_DERIVED=true`
+to use the existing local/S3 export settings. The output is one verified
+`reconstructed_major_roads.geoparquet`, with fresh covering metadata and basic
+road fields. Detailed source intervals and reconstruction diagnostics remain
+separate tables.
+
+Validate the new lesson alone with local output and retained evidence:
+
+```bash
+python3 scripts/validate-notebooks.py --notebooks 17 \
+  --run-dir .artifacts/road-reconstruction/validation
+```
+
+This preserves the medium preset for notebook 17, verifies deterministic results,
+retains membership and diagnostics as Parquet, checks Road 6, and verifies exact
+export read-back. Run `scripts/check-notebook-maps.cjs` against its attempt folder
+for offline browser checks. Geometry fixtures run in the pinned Sedona image:
+`python3 -m unittest discover -s tests -p test_road_reconstruction.py -v`.
+`tests/check_road_reconstruction_spark.py <evidence-directory>` tests generated
+regional selection and graph caps. After a complete notebook validation,
+`tests/check_road_reconstruction_exports.py <attempt-directory> <release-directory>`
+independently audits interval coverage, connector joins, source vertices, lengths,
+and covering-box values using Arrow/Shapely; it does not call the reconstruction
+implementation.
 
 Notebook 16 uses the configured medium region (or the editable large preset),
 including territorial waters by default. It scans Base land use, infrastructure,
@@ -80,7 +129,7 @@ The shared `DERIVED_LOCAL_FALLBACK_DIR` must be inside `SEDONA_SCRATCH_DIR`;
 use host-mounted directories to retain files after a container exits. Local
 mode does not require an S3 destination and never writes to S3.
 
-### Full-data local validation of notebooks 10–16
+### Full-data local validation of notebooks 10–17
 
 With Podman, the pinned lab image, and the non-secret region settings in `.env`:
 
@@ -89,8 +138,9 @@ python3 scripts/validate-notebooks.py \
   --release-dir /absolute/path/to/overture/release/2026-07-22.0
 ```
 
-The runner uses the large regional preset and territorial waters, retaining the
-worldwide and Road 6 scopes. It executes every cell in a fresh, network-disabled
+The runner uses the large regional preset and territorial waters for existing
+regional lessons, preserves worldwide and Road 6 scopes, and keeps notebook 17
+at medium scale. It executes every cell in a fresh, network-disabled
 container, reads the source release through a read-only mount, and writes exports,
 executed notebooks, HTML maps, logs, effective configuration, source hashes, and
 read-back reports below `.artifacts/notebooks-10-16/<run-id>/`. Export verification

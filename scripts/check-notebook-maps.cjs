@@ -81,19 +81,24 @@ const assert = require('node:assert/strict');
             function coordinates(value) {
               if (!Array.isArray(value)) return;
               if (typeof value[0] === 'number') candidates.push(value);
-              else for (const part of value.slice(0, 3)) coordinates(part);
+              else for (const index of [...new Set([0, Math.floor(value.length / 4),
+                Math.floor(value.length / 2), Math.floor(value.length * 3 / 4), value.length - 1])]) {
+                if (index >= 0) coordinates(value[index]);
+              }
             }
             for (const layer of jsonInput.layers.filter(l => l.pickable)) {
-              for (const row of (layer.data?.features || layer.data || []).slice(0, 60)) {
+              for (const row of (layer.data?.features || layer.data || []).slice(0, 200)) {
                 coordinates(row.geometry?.coordinates || row.position || row.coordinates);
               }
             }
             let attempts = 0;
             for (const coord of candidates) {
-              const [x, y] = viewport.project(coord);
+              const [x, y] = viewport.project(coord).map(Math.round);
               if (x < 2 || y < 2 || x >= deck.width - 2 || y >= deck.height - 2) continue;
               if (++attempts > 30) break;
-              const result = deck.pickObject({x, y, radius: countries ? 0 : 4});
+              // Match the real mouse's zero-radius pick. A wider query can
+              // choose the neighbouring carriageway and falsely fail hover.
+              const result = deck.pickObject({x, y, radius: 0});
               if (result?.object) {
                 const rect = deck.canvas.getBoundingClientRect();
                 const properties = result.object.properties || result.object;
