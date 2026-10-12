@@ -3,7 +3,7 @@
 #
 # Find a city in Overture, expand its **complete land boundary by a buffer in
 # metres**, and query every intersecting road segment. The default is **Ofakim
-# (אופקים), Israel, plus 2 km**, with ordinary car-road classes selected.
+# (אופקים), country code IL, plus 2 km**, with ordinary car-road classes selected.
 #
 # This is a visual road inventory. Class selection does not evaluate private
 # access, closures, conditional restrictions, road surfaces, or turn rules, and
