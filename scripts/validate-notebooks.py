@@ -71,7 +71,7 @@ def worker(number, destination, timeout):
         if hashes() != initial:
             raise RuntimeError("Validation source changed during execution")
         records = json.loads((destination / "exports-validation.json").read_text())
-        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 2, 15: 1, 16: 1, 17: 1}[number]
+        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 2, 15: 1, 16: 1, 17: 1, 18: 0}[number]
         if len(records) != expected_exports:
             raise AssertionError(f"Expected {expected_exports} validated exports, found {len(records)}")
         report.update(status="passed", exports=records)
@@ -183,10 +183,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir")
     parser.add_argument("--run-dir", type=Path)
-    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 18), default=list(range(10, 18)))
+    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 19), default=list(range(10, 19)))
     parser.add_argument("--ports-map-limit", type=int, default=50_000)
     parser.add_argument("--timeout", type=int, default=7200, help="Per-cell timeout in seconds")
-    parser.add_argument("--worker", type=int, choices=range(10, 18), help=argparse.SUPPRESS)
+    parser.add_argument("--worker", type=int, choices=range(10, 19), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker is not None:
         worker(args.worker, Path("/results"), args.timeout)

@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same eighteen lessons support a read-only filesystem release
+Apache Sedona. The same nineteen lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -32,6 +32,24 @@ only collect explicitly bounded results for tables or maps.
 | `15_world_countries` | Worldwide land-country polygons, offline interactive map, one full-resolution local or S3 GeoParquet file |
 | `16_region_ports` | Regional port sites/candidates and maritime components, interactive map, one local GeoParquet file |
 | `17_reconstructing_major_roads` | Complete medium-region motorway/trunk/primary carriageways, Road 6 before/after, source membership, diagnostics, optional GeoParquet |
+| `18_city_roads` | City boundary plus metric buffer, complete road-class selection, counts and offline interactive map; Ofakim example |
+
+Notebook 18 defaults to **Ofakim (אופקים), IL, with a 2 km boundary buffer**.
+Edit `CITY_NAME`, `COUNTRY_CODE`, optional `CITY_DIVISION_ID`, `BUFFER_METERS`,
+and `ROAD_CLASSES` in its configuration cell. The default car-road classes
+include residential, service and living streets as well as major roads; use
+`None` for all road classes or a custom tuple. This is a class-based inventory,
+not vehicle-access verification. All matching whole segments stay in the
+`roads` Spark DataFrame. The offline map shows the city, buffer and roads by
+class with name/ID tooltips, and refuses to silently truncate above its editable
+50,000-segment display limit. No export or online geocoder is required.
+
+Validate the city lesson against the configured local release with
+`python3 scripts/validate-notebooks.py --notebooks 18 --run-dir .artifacts/city-roads/validation`.
+Run `tests/check_city_roads_spark.py` in the pinned Sedona image for city lookup,
+metric buffer, exact road selection, and map-limit fixtures. Run the existing
+`scripts/check-notebook-maps.cjs` on the validation attempt directory to verify
+offline rendering, hover, pan/zoom, and layer toggles.
 
 Notebook 17 reconstructs connected main carriageways without sampling the
 analytical input. It excludes links, preserves source shape vertices, evaluates
@@ -129,7 +147,7 @@ The shared `DERIVED_LOCAL_FALLBACK_DIR` must be inside `SEDONA_SCRATCH_DIR`;
 use host-mounted directories to retain files after a container exits. Local
 mode does not require an S3 destination and never writes to S3.
 
-### Full-data local validation of notebooks 10–17
+### Full-data local validation of notebooks 10–18
 
 With Podman, the pinned lab image, and the non-secret region settings in `.env`:
 
