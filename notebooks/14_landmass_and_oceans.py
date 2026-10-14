@@ -11,7 +11,8 @@
 # bboxes are recomputed because source pruning boxes are rounded outward. The
 # regional result clips those same surfaces to the combined rectangle of the
 # configured country extents, including intervening sea and neighboring land.
-# This is not a country-ownership mask. No global dissolve is needed.
+# This is not a country-ownership mask. Exact outputs retain native pieces;
+# optional GeoPackages add tiled, dissolved presentation layers for GeoServer.
 
 # %%
 import time
@@ -22,6 +23,9 @@ from pyspark.sql import functions as F
 from overture_lab.config import load_settings
 from overture_lab.regions import Bounds, select_country_areas
 from overture_lab.spark import create_sedona, read_type
+from overture_lab.geopackage import (
+    GeneralizationOptions, check_geopackage_dependencies, export_surface_geopackage,
+)
 from overture_lab.surfaces import (
     SURFACE_FILTERS, regional_bounds, source_classification_counts,
     select_world_surfaces, validate_surfaces, clip_surfaces, coverage_report,
@@ -33,9 +37,22 @@ INCLUDE_TERRITORIAL_WATERS = True  # affects only the regional rectangle
 WORLD_GRID_DEGREES = 2.0  # classify 16,200 cell centers; display only
 REGIONAL_MAP_TOLERANCE = 0.001
 QA_WINDOWS = []  # optional Bounds(xmin, ymin, xmax, ymax), <= 1 degree per side
+EXPORT_GEOPACKAGE = True  # still gated by WRITE_DERIVED; False keeps the original workflow
+GPKG_SCOPES = ("world", "regional")  # use ("regional",) for a smaller first run
+GPKG_LEVELS = {"fine": 0.001, "medium": 0.01, "coarse": 0.05}  # angular degrees
+GPKG_TILE_DEGREES = 2.0  # globally aligned; must divide 180 exactly
+GPKG_MAX_TILE_COORDINATES = 2_000_000  # reduce tile size if the guard fires
+GPKG_PRECISION_GRID_DEGREES = None  # opt-in: e.g. 1e-10 for numerical coastline mismatches
 
 settings = load_settings(region_preset=REGION_PRESET,
                          include_territorial_waters=INCLUDE_TERRITORIAL_WATERS)
+gpkg_options = GeneralizationOptions(GPKG_LEVELS, GPKG_TILE_DEGREES,
+                                    GPKG_MAX_TILE_COORDINATES, GPKG_PRECISION_GRID_DEGREES)
+gpkg_options.validate()
+if not GPKG_SCOPES or set(GPKG_SCOPES) - {"world", "regional"}:
+    raise ValueError("GPKG_SCOPES must select world and/or regional")
+if EXPORT_GEOPACKAGE and settings.write_derived:
+    display(check_geopackage_dependencies())  # fail before expensive source scans
 spark = create_sedona(settings, "14-landmass-and-oceans")
 started = time.perf_counter()
 display({"release": settings.release, "filters": SURFACE_FILTERS,
@@ -118,7 +135,8 @@ display(qa_reports)
 # The regional preview caps pieces at `MAP_FEATURE_LIMIT`, simplifies only display
 # copies, and uses a 300,000-coordinate budget. Oversized display features are
 # omitted. White areas in an incomplete regional preview are not missing-source
-# evidence. All analytical/export geometry remains exact.
+# evidence. Analytical geometry and GeoParquet exports remain exact; the new
+# GeoPackage section separately creates complete generalized presentation layers.
 
 # %%
 import matplotlib.pyplot as plt
@@ -184,6 +202,90 @@ world_export = export_surfaces(world_surfaces, spark, settings, scope="world")
 display(world_export)
 regional_export = export_surfaces(regional_surfaces, spark, settings, scope="regional")
 display(regional_export)
+
+# %% [markdown]
+# ## GeoPackages for GeoServer: exact plus dissolved presentation layers
+#
+# Each selected scope gets one named `.gpkg` with `landmass_full`, `ocean_full`,
+# and landmass/ocean pairs for every configured level. Detailed layers retain
+# all coordinates and attribution; nested `sources` becomes `sources_json`.
+# Generalized layers clip to aligned tiles, dissolve by class, then simplify
+# shared coastlines together with fixed tile boundaries. Islands/holes are not
+# deliberately removed. These approximate geometries are for presentation.
+#
+# All pieces are processed, independently of display caps. The exporter streams
+# exact rows into indexed tables and queries one tile at a time. A tile over the
+# coordinate budget or with invalid/nonmatching coverage stops with diagnostics;
+# it never drops features, repairs coastlines, or fills source gaps silently.
+# Tolerances are in degrees, not metres, and are not error-distance guarantees.
+# Some real coastline pieces have different segmentation and tiny numerical
+# overlaps. To normalize presentation geometry explicitly, set
+# `GPKG_PRECISION_GRID_DEGREES=1e-10`. This rounds and nodes shared boundaries;
+# the report records per-class/tile area, component and hole changes. Genuine
+# overlaps that remain are rejected. Exact layers never use this normalization.
+#
+# Install `requirements-geopackage.txt` **inside the notebook runtime** when
+# needed. `EXPORT_GEOPACKAGE=False` disables this optional dependency and export.
+# Local/S3 routing follows the existing settings, with no fallback. S3 exports
+# use local scratch and a downloaded copy for SHA-256 verification, so allow disk
+# for two complete files. A dry run performs no GeoPackage writes.
+#
+# Follow the [GeoServer deployment and styling manual](../docs/geoserver-geopackage.md)
+# to publish read-only stores, import the provided SLD styles, and create WMS
+# groups that switch detail automatically by scale. S3 files must first be
+# downloaded to a filesystem GeoServer can access.
+
+# %%
+gpkg_exports = {}
+if EXPORT_GEOPACKAGE:
+    for scope in dict.fromkeys(GPKG_SCOPES):
+        frame = world_surfaces if scope == "world" else regional_surfaces
+        bounds = Bounds(-180, -90, 180, 90) if scope == "world" else region_bounds
+        gpkg_exports[scope] = export_surface_geopackage(
+            frame, spark, settings, scope=scope, bounds=bounds, options=gpkg_options,
+            progress=lambda event: print(event, flush=True),
+        )
+        display(gpkg_exports[scope])
+else:
+    print("GeoPackage export disabled; exact GeoParquet workflow is unchanged.")
+
+# %% [markdown]
+# ### Bounded comparison of locally exported detail levels
+#
+# Preview the first QA window from a local regional export. Each panel has a
+# 300,000-coordinate/500-feature budget; omitted features are reported. The
+# exported layers themselves are complete. S3 exports can be previewed after
+# downloading the verified file, or through GeoServer using the manual.
+
+# %%
+local_gpkg = gpkg_exports.get("regional", {})
+if settings.derived_output_mode == "local" and local_gpkg.get("status") == "written":
+    import geopandas as gpd
+    import shapely
+    from overture_lab.geopackage import iter_geopackage_features
+    box = qa_windows[0]
+    for level in GPKG_LEVELS:
+        _, axis = plt.subplots(figsize=(10, 6))
+        used = shown = omitted = 0
+        for surface in ("ocean", "landmass"):
+            shapes = []
+            for _, shape in iter_geopackage_features(
+                local_gpkg["geopackage_uri"], f"{surface}_{level}",
+                bbox=(box.xmin, box.ymin, box.xmax, box.ymax),
+            ):
+                n = int(shapely.get_num_coordinates(shape))
+                if used + n > 300_000 or shown >= 500:
+                    omitted += 1
+                    continue
+                shapes.append(shape)
+                used += n
+                shown += 1
+            if shapes:
+                gpd.GeoSeries(shapes, crs="EPSG:4326").plot(ax=axis, color=colors[surface], linewidth=0)
+        axis.set_xlim(box.xmin, box.xmax)
+        axis.set_ylim(box.ymin, box.ymax)
+        axis.set_title(f"{level}: {GPKG_LEVELS[level]:g}° — {shown} pieces, {omitted} omitted in preview")
+        plt.show()
 
 # %% [markdown]
 # ## Reload later without rescanning the original land and water layers

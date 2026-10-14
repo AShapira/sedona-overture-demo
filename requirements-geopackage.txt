@@ -1,0 +1,6 @@
+# Optional Notebook 14 export dependencies (Python 3.11+).
+# Shapely wheels include GEOS >=3.12; pyogrio wheels include the GDAL GPKG driver.
+shapely==2.1.2
+pyogrio==0.11.1
+geopandas==1.1.1
+pyarrow==21.0.0

@@ -28,7 +28,7 @@ only collect explicitly bounded results for tables or maps.
 | `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
 | `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
 | `13_region_overview` | Medium, large, and city boundaries together, layer controls, city navigation, public or internal WMS |
-| `14_landmass_and_oceans` | Physical coastline surfaces, exact world/regional GeoParquet exports, coverage diagnostics and offline previews |
+| `14_landmass_and_oceans` | Physical coastline surfaces, exact GeoParquet, indexed GeoPackages with dissolved detail levels, GeoServer styles and offline previews |
 | `15_world_countries` | Worldwide land-country polygons, offline interactive map, one full-resolution local or S3 GeoParquet file |
 | `16_region_ports` | Regional port sites/candidates and maritime components, interactive map, one local GeoParquet file |
 | `17_reconstructing_major_roads` | Complete medium-region motorway/trunk/primary carriageways, Road 6 before/after, source membership, diagnostics, optional GeoParquet |
@@ -266,6 +266,20 @@ artifacts and are never committed.
 
 ## Physical landmass and ocean analysis
 
+Notebook 14 also exports world/regional **GeoPackages** with exact layers and
+three complete, tiled, dissolved presentation levels. Enable `WRITE_DERIVED`
+and leave `EXPORT_GEOPACKAGE=True`; select `GPKG_SCOPES=("regional",)` for a
+smaller first run. Optional dependencies are in `requirements-geopackage.txt`.
+Local/S3 routing follows the existing settings. The
+[GeoServer deployment manual](docs/geoserver-geopackage.md) covers file placement,
+read-only stores, publication, four importable SLD styles, automatic scale-based
+detail selection, caching, updates and troubleshooting. GeoPackage tolerances are
+angular degrees, and generalized geometry is for presentation. Exact GeoParquet
+exports and analytical surface geometry keep their existing contract.
+Strict coverage validation is the default. For numerical coastline mismatches,
+the notebook provides opt-in `GPKG_PRECISION_GRID_DEGREES` normalization with
+reported area, component and hole changes, applied only to generalized layers.
+
 Notebook 14 reads `base/land` with `subtype='land' AND class='land'` and
 `base/water` with `subtype='ocean'`. These are coastline-derived physical
 surfaces. Inland lakes remain inside the landmass mask; named ocean/sea points,
@@ -295,7 +309,7 @@ release/URI, scope/extent, geometry policy, `bbox`, and exact `geometry`.
 Both scopes recompute their bboxes from geometry; source pruning boxes are
 rounded outward and are not exact coordinate extrema.
 GeoParquet 1.1 adds `geometry_bbox` covering metadata. No display sampling or
-simplification affects exports. Read-back validates the schema, counts,
+simplification affects GeoParquet exports. Read-back validates the schema, counts,
 geometry, bounding boxes, and fingerprints of every row, including provenance.
 Missing source attribution is reported and preserved. This derived schema is
 an analytical projection, not a replacement for the complete source schemas.
