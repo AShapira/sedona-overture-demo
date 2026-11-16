@@ -28,7 +28,7 @@ python3 -m pip install --no-index --find-links=gpkg-wheels -r requirements-geopa
 
 Set `WRITE_DERIVED=true` and select the usual `DERIVED_OUTPUT_MODE=local` or `s3`.
 S3 requires `DERIVED_OUTPUT_URI`. For local output the root is
-`DERIVED_LOCAL_FALLBACK_DIR`; the compose default is `/workspace/.artifacts/derived`.
+`DERIVED_LOCAL_FALLBACK_DIR`; the compose default is `/workspace/.artifacts/lab/derived`.
 These examples describe settings, not a command that modifies an existing service.
 
 Notebook controls:

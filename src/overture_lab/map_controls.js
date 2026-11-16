@@ -61,6 +61,12 @@ function setupMapControls(map, spec, coordinateCounts) {
     if (!viewport || viewport.width <= 1 || viewport.height <= 1) return false;
     const padding = Math.min(45, viewport.width / 8, viewport.height / 8);
     const fitted = viewport.fitBounds(bounds, {padding, maxZoom: 14});
+    // A controller pan does not update initialViewState. Rebase on the current
+    // camera so selecting the same saved view again still resets the map.
+    map.setProps({initialViewState: {
+      longitude: viewport.longitude, latitude: viewport.latitude,
+      zoom: viewport.zoom, bearing: viewport.bearing, pitch: viewport.pitch
+    }});
     map.setProps({initialViewState: {
       longitude: fitted.longitude, latitude: fitted.latitude,
       zoom: fitted.zoom, bearing: 0, pitch: 0

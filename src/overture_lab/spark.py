@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
 
 
-def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
+def create_sedona(settings: LabSettings, app_name: str, *, overlay_ng: bool = False) -> "SparkSession":
     scratch_status(settings)
     settings.prepare_process_environment()
 
@@ -33,6 +33,15 @@ def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
         )
         .config("spark.ui.showConsoleProgress", "false")
     )
+    if overlay_ng:
+        # JTS reads these at JVM/class initialization. Full-precision OverlayNG
+        # handles valid, nearly coincident shorelines that the legacy overlay
+        # can reject as non-noded intersections. RelateNG also avoids the legacy
+        # quadratic boundary checks in Sedona's overlay wrappers. No precision
+        # grid is applied; relation predicates do not change geometry.
+        options = "-Djts.overlay=ng -Djts.relate=ng"
+        builder = (builder.config("spark.driver.extraJavaOptions", options)
+                   .config("spark.executor.extraJavaOptions", options))
 
     uses_s3 = settings.release_uri.startswith("s3a://") or bool(
         settings.derived_output_uri
@@ -72,6 +81,10 @@ def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
             )
 
     active = SparkContext._active_spark_context
+    if active is not None and overlay_ng and any(
+            active._jvm.java.lang.System.getProperty(key) != "ng" for key in ("jts.overlay", "jts.relate")):
+        raise RuntimeError("Land/water overlays require a fresh kernel with OverlayNG and RelateNG. "
+                           "Restart the notebook kernel and rerun its configuration cell.")
     if active is not None and active.master != expected_master:
         raise RuntimeError(
             "A Spark context with incompatible resources is already active. "
@@ -79,6 +92,9 @@ def create_sedona(settings: LabSettings, app_name: str) -> "SparkSession":
         )
 
     spark = SedonaContext.create(builder.getOrCreate())
+    if overlay_ng and any(spark._jvm.java.lang.System.getProperty(key) != "ng"
+                          for key in ("jts.overlay", "jts.relate")):
+        raise RuntimeError("OverlayNG and RelateNG were not enabled before JVM startup. Restart the notebook kernel.")
     spark.sparkContext.setLogLevel(os.getenv("SEDONA_SPARK_LOG_LEVEL", "ERROR"))
     return spark
 

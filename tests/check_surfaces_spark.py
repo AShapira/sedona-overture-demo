@@ -58,6 +58,7 @@ def main():
     spark = create_sedona(settings, "surface-integration")
     from pyspark.sql import functions as F
     try:
+        expect_failure(lambda: create_sedona(settings, "cannot-change-overlay", overlay_ng=True), "fresh kernel")
         land = fixture(spark, [
             ("mainland", "land", "land", "POLYGON ((0 0, 0.5 0, 0.5 1, 0 1, 0 0))"),
             ("island", "land", "land", "POLYGON ((0.7 0.4, 0.8 0.4, 0.8 0.6, 0.7 0.6, 0.7 0.4))"),
@@ -138,7 +139,7 @@ def main():
         with patch("overture_lab.outputs._s3_permission_probe", return_value=True), patch("overture_lab.outputs._promote_single_part", side_effect=OSError("injected interruption")):
             expect_failure(lambda: export_surfaces(world, spark, fake_s3, scope="world"), "partial prefix")
         report["status"] = "passed"
-        report["checks"] = ["filters", "lake", "island_hole", "clipping", "boundary_contact", "gap", "overlap", "empty", "invalid_geometry", "bbox", "missing_class", "display_bounds", "dateline", "poles", "dry_run", "local_or_s3_roundtrip", "denied_probe", "interrupted_promotion"]
+        report["checks"] = ["overlay_kernel_guard", "filters", "lake", "island_hole", "clipping", "boundary_contact", "gap", "overlap", "empty", "invalid_geometry", "bbox", "missing_class", "display_bounds", "dateline", "poles", "dry_run", "local_or_s3_roundtrip", "denied_probe", "interrupted_promotion"]
         (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n")
         print(json.dumps(report, indent=2))
     finally:

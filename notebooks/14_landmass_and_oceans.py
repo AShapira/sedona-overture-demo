@@ -13,6 +13,9 @@
 # configured country extents, including intervening sea and neighboring land.
 # This is not a country-ownership mask. Exact outputs retain native pieces;
 # optional GeoPackages add tiled, dissolved presentation layers for GeoServer.
+# A separate **land/water** export below subtracts all mapped water polygons
+# from land, including inland lakes and rivers, while preserving these original
+# landmass/ocean products.
 
 # %%
 import time
@@ -31,12 +34,18 @@ from overture_lab.surfaces import (
     select_world_surfaces, validate_surfaces, clip_surfaces, coverage_report,
     display_surfaces, surface_grid, export_surfaces,
 )
+from overture_lab.land_water import (
+    LandWaterOptions, build_land_water, clip_land_water, export_land_water,
+)
 
 REGION_PRESET = "medium"  # "medium" or "large"
 INCLUDE_TERRITORIAL_WATERS = True  # affects only the regional rectangle
 WORLD_GRID_DEGREES = 2.0  # classify 16,200 cell centers; display only
 REGIONAL_MAP_TOLERANCE = 0.001
 QA_WINDOWS = []  # optional Bounds(xmin, ymin, xmax, ymax), <= 1 degree per side
+EXPORT_LAND_WATER = True  # also requires WRITE_DERIVED; no overlay in a dry run
+LAND_WATER_TILE_DEGREES = 2.0  # use 0.5 for the dense water coverage in release 2026-07-22.0
+LAND_WATER_MAX_TILE_COORDINATES = 2_000_000  # reduce tile size if exceeded
 EXPORT_GEOPACKAGE = True  # still gated by WRITE_DERIVED; False keeps the original workflow
 GPKG_SCOPES = ("world", "regional")  # use ("regional",) for a smaller first run
 GPKG_LEVELS = {"fine": 0.001, "medium": 0.01, "coarse": 0.05}  # angular degrees
@@ -49,11 +58,13 @@ settings = load_settings(region_preset=REGION_PRESET,
 gpkg_options = GeneralizationOptions(GPKG_LEVELS, GPKG_TILE_DEGREES,
                                     GPKG_MAX_TILE_COORDINATES, GPKG_PRECISION_GRID_DEGREES)
 gpkg_options.validate()
+land_water_options = LandWaterOptions(LAND_WATER_TILE_DEGREES, LAND_WATER_MAX_TILE_COORDINATES)
+land_water_options.validate()
 if not GPKG_SCOPES or set(GPKG_SCOPES) - {"world", "regional"}:
     raise ValueError("GPKG_SCOPES must select world and/or regional")
 if EXPORT_GEOPACKAGE and settings.write_derived:
     display(check_geopackage_dependencies())  # fail before expensive source scans
-spark = create_sedona(settings, "14-landmass-and-oceans")
+spark = create_sedona(settings, "14-landmass-and-oceans", overlay_ng=True)
 started = time.perf_counter()
 display({"release": settings.release, "filters": SURFACE_FILTERS,
          "region_preset": settings.region_preset,
@@ -204,6 +215,67 @@ regional_export = export_surfaces(regional_surfaces, spark, settings, scope="reg
 display(regional_export)
 
 # %% [markdown]
+# ## Exact land/water GeoParquet, including inland water
+#
+# These additional files classify `surface` as **land** or **water**. Water
+# includes all mapped Polygon/MultiPolygon water areas except `physical` label
+# features: oceans, lakes, polygon rivers, ponds, reservoirs, canals, pools,
+# and intermittent water. This is mapped coverage, not current water levels.
+# Point and line features are counted but excluded; no river width is invented.
+#
+# Sedona clips inputs to globally aligned tiles, dissolves water and land in
+# each tile, then subtracts water from land. Water takes precedence in overlaps.
+# Lake islands and holes remain land where the source coastline land covers them.
+# Full precision is retained: no simplification, repair, or gap filling. These
+# overlays use the pinned runtime's JTS OverlayNG engine, without a precision
+# grid, and RelateNG for efficient boundary predicates. Restart the kernel when
+# switching from a session using the older engines.
+# Tile boundaries split the coverage into manageable pieces without removing area.
+# The coordinate guard runs before unions; reduce `LAND_WATER_TILE_DEGREES` if
+# it fires. No worldwide geometry is collected into Python. Coverage diagnostics
+# report gaps, overlaps, and footprint changes in square degrees, not physical area.
+#
+# Each scope gets one `world_land_water.geoparquet` or
+# `regional_land_water.geoparquet` in its own unique release/run directory.
+# The regional file clips the computed world mask to the same regional rectangle.
+# Rows identify tiles, not original features; `sources` contains distinct
+# contributing dataset/license pairs from both land and water in that tile.
+# Source counts describe tile contributors before dissolution and regional clipping;
+# missing attribution is reported. Release, filters, and geometry policy remain
+# in every row. The original source release retains feature-level lineage.
+#
+# `EXPORT_LAND_WATER=False` skips this section. `WRITE_DERIVED=false` reports
+# planned outputs without the additional overlay. Local/S3 routing, exact
+# read-back verification, and failure reporting match the existing GeoParquet
+# exports. The cached world and regional masks are released after export.
+
+# %%
+land_water_exports = {}
+land_water_report = None
+if EXPORT_LAND_WATER and settings.write_derived:
+    world_land_water = regional_land_water = None
+    try:
+        world_land_water, land_water_report = build_land_water(
+            land, water, release=settings.release, release_uri=settings.release_uri,
+            options=land_water_options, progress=lambda event: print(event, flush=True),
+        )
+        display(land_water_report)
+        regional_land_water = clip_land_water(world_land_water, region_bounds).persist(StorageLevel.DISK_ONLY)
+        for scope, frame in (("world", world_land_water), ("regional", regional_land_water)):
+            land_water_exports[scope] = export_land_water(frame, spark, settings, scope=scope)
+            display(land_water_exports[scope])
+        restored_water = spark.read.format("geoparquet").load(land_water_exports["regional"]["geoparquet_uri"])
+        restored_water.where("surface = 'water'").groupBy("scope", "surface").count().show()
+    finally:
+        for frame in (regional_land_water, world_land_water):
+            if frame is not None:
+                frame.unpersist()
+else:
+    display({"land_water_status": "dry-run" if EXPORT_LAND_WATER else "disabled",
+             "planned_files": ["world_land_water.geoparquet", "regional_land_water.geoparquet"],
+             "detail": "Enable EXPORT_LAND_WATER and WRITE_DERIVED to build and export the masks."})
+
+# %% [markdown]
 # ## GeoPackages for GeoServer: exact plus dissolved presentation layers
 #
 # Each selected scope gets one named `.gpkg` with `landmass_full`, `ocean_full`,
@@ -309,7 +381,8 @@ else:
 
 # %%
 display({"total_seconds": round(time.perf_counter() - started, 3),
-         "world": world_report, "regional": regional_report, "coverage": qa_reports})
+         "world": world_report, "regional": regional_report, "coverage": qa_reports,
+         "land_water": land_water_report, "land_water_exports": land_water_exports})
 world_surfaces.unpersist()
 regional_surfaces.unpersist()
 # Leave the shared notebook Spark context available for further analysis.

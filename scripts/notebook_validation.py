@@ -5,6 +5,44 @@ from pathlib import Path
 import time
 
 
+def verify_land_water_samples(water, restored, bounds, root):
+    """Check bounded real lake/river interior points against the saved mask."""
+    from pyspark.sql import functions as F
+    from overture_lab.regions import bbox_overlap
+    from overture_lab.surfaces import POLYGONS, envelope_sql
+    envelope = envelope_sql(bounds)
+    samples = None
+    counts = {}
+    for subtype in ("lake", "river"):
+        candidates = (bbox_overlap(water, bounds).where(F.col("subtype") == subtype)
+                      .where(POLYGONS).where(F.expr(f"ST_Intersects(geometry, {envelope})"))
+                      .withColumn("geometry", F.expr(f"ST_CollectionExtract(ST_Intersection(geometry, {envelope}), 3)"))
+                      .where("NOT ST_IsEmpty(geometry)").orderBy("id").limit(5)
+                      .select(F.concat(F.lit(subtype + ":"), "id").alias("sample_id"),
+                              F.lit("water").alias("expected"), F.expr("ST_PointOnSurface(geometry)").alias("point")))
+        counts[subtype] = candidates.count()
+        if not counts[subtype]:
+            raise AssertionError(f"Real land/water audit found no polygon {subtype} samples in the regional extent")
+        samples = candidates if samples is None else samples.unionByName(candidates)
+    land = (restored.where("surface = 'land'").orderBy("tile_id").limit(5)
+            .select(F.concat(F.lit("land:"), "tile_id").alias("sample_id"), F.lit("land").alias("expected"),
+                    F.expr("ST_PointOnSurface(geometry)").alias("point")))
+    counts["land"] = land.count()
+    if not counts["land"]:
+        raise AssertionError("Real land/water audit found no dry-land samples")
+    result = (samples.unionByName(land).join(restored.select("surface", "geometry"),
+              F.expr("ST_Contains(geometry, point)"), "left")
+              .groupBy("sample_id", "expected").agg(F.collect_set("surface").alias("actual"))
+              .orderBy("sample_id").collect())
+    report = {"counts": counts, "samples": [r.asDict() for r in result], "status": "passed"}
+    if any(r.actual != [r.expected] for r in result):
+        report["status"] = "failed"
+    (Path(root) / "land-water-samples.json").write_text(json.dumps(report, indent=2))
+    if report["status"] != "passed":
+        raise AssertionError(f"Real lake/river/land classification failed: {report}")
+    return report
+
+
 def install(root):
     from pyspark.sql import functions as F
     from sedona.sql.types import GeometryType
@@ -19,16 +57,17 @@ def install(root):
         (root / "maps.json").write_text(json.dumps(maps, indent=2))
 
     def compare(before, after, label):
-        # JSON retains nested attributes; WKB retains every coordinate and ring.
-        # Compare multisets, including duplicate rows, without driver collection.
+        # Fingerprint every attribute and every WKB coordinate/ring, retaining
+        # duplicate multiplicities. Shuffling full hex-WKB JSON rows can consume
+        # several times the worldwide export size in temporary disk space.
         def rows(frame):
             columns = [
                 F.hex(F.expr(f"ST_AsBinary(`{field.name}`)")).alias(field.name)
                 if isinstance(field.dataType, GeometryType) else F.col(field.name)
                 for field in before.schema.fields
             ]
-            return frame.select(F.to_json(F.struct(*columns),
-                                         options={"ignoreNullFields": "false"}).alias("row"))
+            return frame.select(F.sha2(F.to_json(F.struct(*columns),
+                                         options={"ignoreNullFields": "false"}), 256).alias("row"))
         left, right = rows(before), rows(after)
         if left.exceptAll(right).limit(1).count() or right.exceptAll(left).limit(1).count():
             raise AssertionError(f"Exact attribute/geometry round trip failed: {label}")

@@ -1,5 +1,6 @@
 // Usage: PLAYWRIGHT_MODULE=/path/to/playwright node scripts/check-notebook-maps.cjs <attempt-dir>...
 // Uses a separate headless browser; never touches an existing browser session.
+// Set NOTEBOOK_MAP_SCREENSHOTS=false to test interactions without GPU readback captures.
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -68,7 +69,42 @@ const assert = require('node:assert/strict');
             await page.waitForTimeout(350);
             const view = await page.evaluate(() => deck.viewManager.getViewState('MapView'));
             assert.ok(Number.isFinite(view.zoom) && Number.isFinite(view.longitude));
+            if (await button.getAttribute('data-view') === 'world' && report.initial.layers.some(
+                layer => layer.id === 'world-water-transportation')) {
+              for (const key of ['longitude', 'latitude', 'zoom']) {
+                assert.ok(Math.abs(view[key] - report.initial.view[key]) < 0.001,
+                  `World view did not reset ${key} after pan/zoom`);
+              }
+            }
             report.viewButtons.push({name: await button.getAttribute('data-view'), view});
+          }
+          if (report.initial.layers.some(layer => layer.id === 'world-water-transportation')) {
+            if (process.env.NOTEBOOK_MAP_SCREENSHOTS !== 'false') {
+              await page.screenshot({path: path.join(directory, name.replace('.html', '-world.png'))});
+            }
+            // Many ferry segments are smaller than one pixel in a world view.
+            // Zoom to a real route before testing precise zero-radius picking.
+            report.hoverFocus = await page.evaluate(() => {
+              const layer = jsonInput.layers.find(l => l.id === 'world-water-transportation');
+              for (const feature of layer.data.features) {
+                const lines = feature.geometry.type === 'LineString'
+                  ? [feature.geometry.coordinates] : feature.geometry.coordinates;
+                const points = lines.flat();
+                const xs = points.map(p => p[0]), ys = points.map(p => p[1]);
+                const xmin = Math.min(...xs), xmax = Math.max(...xs);
+                const ymin = Math.min(...ys), ymax = Math.max(...ys);
+                if (Math.max(Math.abs(ymin), Math.abs(ymax)) > 70 || xmax - xmin > 90 ||
+                    xmax - xmin + ymax - ymin < 0.01) continue;
+                const bounds = [[xmin - 0.02, ymin - 0.02], [xmax + 0.02, ymax + 0.02]];
+                const fitted = deck.getViewports()[0].fitBounds(bounds, {padding: 60, maxZoom: 13});
+                deck.setProps({initialViewState: {longitude: fitted.longitude, latitude: fitted.latitude,
+                  zoom: fitted.zoom, bearing: 0, pitch: 0}});
+                window.waterHoverFeature = feature;
+                return {source_id: feature.properties.source_id, bounds};
+              }
+              throw new Error('No suitable water route found for hover test');
+            });
+            await page.waitForTimeout(500);
           }
           // Exercise picking at actual feature coordinates, with bounded GPU reads.
           const hit = await page.evaluate(() => {
@@ -85,6 +121,13 @@ const assert = require('node:assert/strict');
                 Math.floor(value.length / 2), Math.floor(value.length * 3 / 4), value.length - 1])]) {
                 if (index >= 0) coordinates(value[index]);
               }
+            }
+            if (window.waterHoverFeature) {
+              const geometry = window.waterHoverFeature.geometry;
+              const line = geometry.type === 'LineString' ? geometry.coordinates : geometry.coordinates[0];
+              const a = viewport.project(line[0]), b = viewport.project(line[1]);
+              candidates.push(viewport.unproject([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]));
+              coordinates(geometry.coordinates);
             }
             for (const layer of jsonInput.layers.filter(l => l.pickable)) {
               for (const row of (layer.data?.features || layer.data || []).slice(0, 200)) {
@@ -124,7 +167,10 @@ const assert = require('node:assert/strict');
           } else {
             throw new Error('No visible feature was picked; hover validation is incomplete');
           }
-          await page.screenshot({path: path.join(directory, name.replace('.html', '.png'))});
+          report.screenshots = process.env.NOTEBOOK_MAP_SCREENSHOTS !== 'false';
+          if (report.screenshots) {
+            await page.screenshot({path: path.join(directory, name.replace('.html', '.png'))});
+          }
           assert.deepEqual(report.errors, []);
           assert.deepEqual(report.externalRequests, []);
           report.status = 'passed';

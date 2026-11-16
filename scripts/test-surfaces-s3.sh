@@ -34,7 +34,7 @@ trap cleanup EXIT
   -e SEDONA_SPARK_PARTITIONS=4 -e SEDONA_SPARK_LOCAL_DIR=/tmp/spark \
   -e SEDONA_SCRATCH_DIR=/tmp -e DERIVED_LOCAL_FALLBACK_DIR=/tmp/derived \
   --entrypoint python3 "${sedona_image}" -c '
-import runpy, sys, time
+import subprocess, sys, time
 from pyarrow import fs
 client = fs.S3FileSystem(access_key="surfacefixture", secret_key="surfacefixturesecret",
     endpoint_override="minio:9000", scheme="http", region="us-east-1", allow_bucket_creation=True)
@@ -46,7 +46,8 @@ for attempt in range(30):
         if attempt == 29:
             raise
         time.sleep(1)
-sys.argv = ["tests/check_surfaces_spark.py", "--output", "/reports", "--s3"]
-runpy.run_path(sys.argv[0], run_name="__main__")
+for script in ("tests/check_surfaces_spark.py", "tests/check_land_water_spark.py"):
+    # Sedona aggregate registration needs a fresh JVM for each Spark context.
+    subprocess.run([sys.executable, script, "--output", "/reports", "--s3"], check=True)
 ' 2>&1 | tee "${report_dir}/run.log"
 printf 'S3 validation evidence: %s\n' "${report_dir}"

@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same nineteen lessons support a read-only filesystem release
+Apache Sedona. The same twenty lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -28,11 +28,33 @@ only collect explicitly bounded results for tables or maps.
 | `11_world_airports_and_medium_runways` | Worldwide canonical airport infrastructure, regional runways, named GeoParquet exports and maps |
 | `12_road_6_transportation_model` | Deep Road 6 route identity, directional segment graph, linear references, statistics and offline maps |
 | `13_region_overview` | Medium, large, and city boundaries together, layer controls, city navigation, public or internal WMS |
-| `14_landmass_and_oceans` | Physical coastline surfaces, exact GeoParquet, indexed GeoPackages with dissolved detail levels, GeoServer styles and offline previews |
+| `14_landmass_and_oceans` | Physical coastline surfaces, land/water masks including inland water, exact GeoParquet, indexed GeoPackages, GeoServer styles and offline previews |
 | `15_world_countries` | Worldwide land-country polygons, offline interactive map, one full-resolution local or S3 GeoParquet file |
 | `16_region_ports` | Regional port sites/candidates and maritime components, interactive map, one local GeoParquet file |
 | `17_reconstructing_major_roads` | Complete medium-region motorway/trunk/primary carriageways, Road 6 before/after, source membership, diagnostics, optional GeoParquet |
 | `18_city_roads` | City boundary plus metric buffer, complete road-class selection, counts and offline interactive map; Ofakim example |
+| `19_world_water_transportation` | All worldwide water transportation segments, one complete GeoParquet export, and an offline interactive world map |
+
+Notebook 19 selects every `transportation/segment` with `subtype='water'`,
+independently of region and sample settings. It exports one full-resolution
+`world_water_transportation.geoparquet` by default, preserving original source
+fields, connector references, and geometry. Output uses the local derived
+directory when no S3 destination is configured; choose `OUTPUT_MODE="s3"` and
+`S3_OUTPUT_URI` for S3. Each run uses a unique directory and verifies the file.
+The map includes all water segments, hover names/IDs, layer toggles, antimeridian
+wrapping, and optional generalized country context. Display-only simplification
+reduces browser work; set `MAP_SIMPLIFY_TOLERANCE=0` for every source vertex.
+The GeoParquet always retains full detail. The map works offline by default.
+Its separate feature/coordinate guards stop oversized previews without affecting
+the complete export. These are Overture's mapped water routes, not a complete
+inventory of commercial shipping services or observed vessel tracks.
+
+Validate the world-water lesson with
+`python3 scripts/validate-notebooks.py --notebooks 19 --run-dir .artifacts/world-water/validation`.
+Run `tests/check_water_transportation_spark.py --output /results` in the pinned
+Sedona image for selection, invalid geometry, display-budget, and exact export
+fixtures. The existing `scripts/check-notebook-maps.cjs` checks the captured map's
+offline rendering, hover, pan/zoom, and layer toggles.
 
 Notebook 18 defaults to **Ofakim (אופקים), IL, with a 2 km boundary buffer**.
 Edit `CITY_NAME`, `COUNTRY_CODE`, optional `CITY_DIVISION_ID`, `BUFFER_METERS`,
@@ -147,7 +169,7 @@ The shared `DERIVED_LOCAL_FALLBACK_DIR` must be inside `SEDONA_SCRATCH_DIR`;
 use host-mounted directories to retain files after a container exits. Local
 mode does not require an S3 destination and never writes to S3.
 
-### Full-data local validation of notebooks 10–18
+### Full-data local validation of notebooks 10–19
 
 With Podman, the pinned lab image, and the non-secret region settings in `.env`:
 
@@ -324,6 +346,67 @@ landmass = surfaces.where("surface = 'landmass'")
 matches = points.join(surfaces, F.expr("ST_Intersects(point_geometry, geometry)"))
 ```
 
+### Land/water masks including inland water
+
+Notebook 14 also defaults to `EXPORT_LAND_WATER=True`. With `WRITE_DERIVED=true`,
+it adds `world_land_water.geoparquet` and `regional_land_water.geoparquet`, each
+in its own unique release/run directory using the existing local/S3 settings.
+The original landmass/ocean exports and GeoPackages retain their semantics.
+Disabling either switch skips the additional worldwide overlay entirely.
+
+The new files use `surface='land'` or `'water'`. All mapped `base/water` polygon
+areas except `subtype='physical'` label features count as water: oceans, lakes,
+polygon rivers, reservoirs, ponds, canals, pools, and intermittent water. Point
+and line exclusions are counted; river lines are never buffered. This describes
+mapped water areas, not current water levels. Other land classes such as wetlands
+are not inferred to be water. Islands inside lake holes remain land wherever
+the coastline-derived land source covers them.
+
+Sedona clips inputs to globally aligned tiles, dissolves each class, and subtracts
+water from land. Water takes precedence in source overlaps. There is no geometry
+simplification, automatic repair, or filling of source gaps. `LAND_WATER_TILE_DEGREES`
+defaults to 2; `LAND_WATER_MAX_TILE_COORDINATES` defaults to 2,000,000. The guard
+runs before tile unions and stops with tile diagnostics if exceeded; reduce tile
+size rather than dropping features. The world mask is persisted on disk and reused
+for exact clipping to the configured regional rectangle, then released after export.
+World geometry is never collected into Python. Allow additional scratch space and
+processing time for the full water layer and tile intermediates.
+
+Notebook 14 starts the bundled JTS OverlayNG engine in full floating-point
+precision, without a precision grid. This avoids legacy-overlay failures on
+nearly coincident shorelines. It also enables RelateNG to avoid quadratic
+boundary-predicate checks on dense lake coverage. Restart the kernel if it was
+already used by a notebook with the older engines. Programmatic callers use
+`create_sedona(settings, app_name, overlay_ng=True)` before `build_land_water`.
+
+Rows carry `tile_id`, `surface`, exact `geometry` and `bbox`, tile size, release,
+scope, filters, geometry policy, and attribution. `sources` aggregates distinct
+dataset/license pairs from the contributing land and water features in each tile;
+source counts and missing-attribution counts describe those contributors before
+dissolution and regional clipping. These are derived masks, not original entities,
+so rows do not claim a single source feature ID. Feature-level lineage remains in
+the identified source release. Tile seams partition the coverage without deliberate
+area loss. Diagnostics report overlap, footprint changes, empty tiles, and uncovered
+area in occupied tiles in square degrees. Each GeoParquet file is verified by exact
+attribute/geometry fingerprints after reload, including bbox and metadata checks.
+
+Reload a reported URI and filter `surface = 'water'` to obtain ocean and inland
+water together. Run `tests/check_land_water_spark.py --output <new-output-directory>`
+inside the pinned Sedona image for independent geometry and local export checks.
+`bash scripts/test-surfaces-s3.sh` checks both surface products against disposable
+MinIO. Full notebook validation enables land/water export and disables optional
+GeoPackage generation, expecting four verified GeoParquet exports:
+
+```bash
+python3 scripts/validate-notebooks.py --notebooks 14 \
+  --run-dir .artifacts/land-water-validation/full --land-water-tile-degrees 0.5
+```
+
+Release `2026-07-22.0` has 2° tiles with over six million input coordinates,
+exceeding the default two-million guard. Use `LAND_WATER_TILE_DEGREES=0.5` in
+the notebook for that release. The validation flag changes only the execution
+copy, retaining the notebook's default and the coordinate guard.
+
 Use bbox pruning before spatial joins where possible. A point on the shared
 coast can match both classes; define a boundary tie policy for your analysis.
 Use geodesic or equal-area calculations for physical areas. The notebook's
@@ -445,6 +528,10 @@ Important variables are documented in `.env.example`. In particular:
   namespaced scratch tree before work begins. Docker bind mounts do not expose
   a portable hard per-directory quota, so the lab never claims this is a
   filesystem-enforced limit and never deletes host scratch automatically.
+  Local Compose uses `.artifacts/lab` for the interactive lab's inventory cache
+  and local exports, keeping retained validation results elsewhere in
+  `.artifacts` outside that lab budget. Its default budget is 20 GiB with a
+  2 GiB reserve (18 GiB usable); validation runners keep their separate budgets.
 - `WRITE_DERIVED` remains false by default. When enabled,
   `DERIVED_OUTPUT_MODE=s3` is the default and uses `DERIVED_OUTPUT_URI`, an S3A
   prefix separate from the immutable release. Set `DERIVED_OUTPUT_MODE=local`

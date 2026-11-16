@@ -37,7 +37,7 @@ def assignments(source, values):
     return "".join(lines)
 
 
-def worker(number, destination, timeout):
+def worker(number, destination, timeout, land_water_tile_degrees=2.0):
     import nbformat
     from nbclient import NotebookClient
 
@@ -50,10 +50,16 @@ def worker(number, destination, timeout):
                 "BASEMAP_MODE": repr("none"), "OVERWRITE": "False",
                 "OUTPUT_PATH": "Path('/results/exports/region_ports.geoparquet')",
                 "WRITE_ROADS": "True",
+                "EXPORT_LAND_WATER": "True", "EXPORT_GEOPACKAGE": "False",
+                "LAND_WATER_TILE_DEGREES": repr(land_water_tile_degrees),
             })
             cell.outputs, cell.execution_count = [], None
     notebook.cells.insert(0, nbformat.v4.new_code_cell(
         "from notebook_validation import install\ninstall('/results')"))
+    if number == 14:
+        notebook.cells.append(nbformat.v4.new_code_cell(
+            "from notebook_validation import verify_land_water_samples\n"
+            "display(verify_land_water_samples(water, restored_water, region_bounds, '/results'))"))
     initial = hashes()
     report = {"notebook": path.name, "source_hashes": initial, "status": "running",
               "configuration": {k: v for k, v in os.environ.items() if k.startswith(
@@ -71,7 +77,7 @@ def worker(number, destination, timeout):
         if hashes() != initial:
             raise RuntimeError("Validation source changed during execution")
         records = json.loads((destination / "exports-validation.json").read_text())
-        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 2, 15: 1, 16: 1, 17: 1, 18: 0}[number]
+        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 4, 15: 1, 16: 1, 17: 1, 18: 0, 19: 1}[number]
         if len(records) != expected_exports:
             raise AssertionError(f"Expected {expected_exports} validated exports, found {len(records)}")
         report.update(status="passed", exports=records)
@@ -157,7 +163,8 @@ def host(args):
             for key, value in environment.items():
                 command += ["-e", f"{key}={value}"]
             command += ["--entrypoint", "python3", IMAGE, "scripts/validate-notebooks.py",
-                        "--worker", str(number), "--timeout", str(args.timeout)]
+                        "--worker", str(number), "--timeout", str(args.timeout),
+                        "--land-water-tile-degrees", str(args.land_water_tile_degrees)]
             print(f"Notebook {number}: {destination}; container={memory} GiB driver={driver} GiB", flush=True)
             with (destination / "run.log").open("w") as log:
                 try:
@@ -183,13 +190,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir")
     parser.add_argument("--run-dir", type=Path)
-    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 19), default=list(range(10, 19)))
+    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 20), default=list(range(10, 20)))
     parser.add_argument("--ports-map-limit", type=int, default=50_000)
     parser.add_argument("--timeout", type=int, default=7200, help="Per-cell timeout in seconds")
-    parser.add_argument("--worker", type=int, choices=range(10, 19), help=argparse.SUPPRESS)
+    parser.add_argument("--land-water-tile-degrees", type=float, default=2.0,
+                        help="Notebook 14 tile size in the execution copy; reduce when its coordinate guard fires")
+    parser.add_argument("--worker", type=int, choices=range(10, 20), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker is not None:
-        worker(args.worker, Path("/results"), args.timeout)
+        worker(args.worker, Path("/results"), args.timeout, args.land_water_tile_degrees)
     else:
         host(args)
 
