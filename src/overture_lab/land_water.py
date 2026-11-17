@@ -72,7 +72,7 @@ def _selected_sources(land, water):
     return selected, [r.asDict() for r in classifications]
 
 
-def _tile_parts(selected, options):
+def _tile_parts(selected, options, *, before_clip=None):
     from pyspark.sql import functions as F
     d = options.tile_degrees
     nx, ny = round(360 / d), round(180 / d)
@@ -85,6 +85,8 @@ def _tile_parts(selected, options):
     parts = (selected.withColumn("_x", F.explode(indices("ST_XMin(geometry)", "ST_XMax(geometry)", 180, nx)))
              .withColumn("_y", F.explode(indices("ST_YMin(geometry)", "ST_YMax(geometry)", 90, ny)))
              .withColumn("tile_id", F.concat_ws("_", "_x", "_y")))
+    if before_clip is not None:
+        before_clip(parts)
     tile = f"ST_SetSRID(ST_PolygonFromEnvelope(-180D + _x*{d}, -90D + _y*{d}, -180D + (_x+1)*{d}, -90D + (_y+1)*{d}), 4326)"
     return (parts.where(F.expr(f"ST_Intersects(geometry, {tile})"))
             .withColumn("geometry", F.expr(f"ST_SetSRID(ST_CollectionExtract(ST_Intersection(geometry, {tile}), 3), 4326)"))

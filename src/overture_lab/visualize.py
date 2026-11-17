@@ -40,9 +40,10 @@ def geometry_coordinate_count(value) -> int:
     return _coordinate_positions(value.get("coordinates", []))
 
 
-def _coordinate_notice(counts: dict[str, int]) -> str:
+def _coordinate_notice(counts: dict[str, int], feature_count: int | None = None) -> str:
     detail = "; ".join(f"{label}: {count:,}" for label, count in counts.items())
-    return f"Drawing map: {sum(counts.values()):,} coordinate positions" + (
+    features = f"{feature_count:,} features; " if feature_count is not None else ""
+    return f"Drawing map: {features}{sum(counts.values()):,} coordinate positions" + (
         f" ({detail})." if detail else "."
     )
 
@@ -183,12 +184,12 @@ def _script_safe_json(value) -> str:
 
 def _offline_deck_document(
     deck, bundle: str | None = None, *, controls: dict | None = None,
-    attribution: str = "",
+    attribution: str = "", feature_count: int | None = None,
 ) -> str:
     """Create a self-contained deck.gl document without remote resource tags."""
     document = json.loads(deck.to_json())
     coordinate_counts = deck_coordinate_counts(document)
-    coordinate_notice = _coordinate_notice(coordinate_counts)
+    coordinate_notice = _coordinate_notice(coordinate_counts, feature_count)
     print(coordinate_notice, flush=True)
     deck_json = _script_safe_json(document)
     tooltip_json = _script_safe_json(getattr(deck, "_tooltip", True))
@@ -255,10 +256,11 @@ class _InlineHtml:
 
 def offline_deck_display(
     deck, width: str = "100%", height: int = 500, *,
-    controls: dict | None = None, attribution: str = "",
+    controls: dict | None = None, attribution: str = "", feature_count: int | None = None,
 ):
     """Return an iframe whose renderer and map configuration are fully inline."""
-    document = _offline_deck_document(deck, controls=controls, attribution=attribution)
+    document = _offline_deck_document(deck, controls=controls, attribution=attribution,
+                                      feature_count=feature_count)
     source = escape(document, quote=True)
     return _InlineHtml(
         f'<iframe title="Interactive map" srcdoc="{source}" '

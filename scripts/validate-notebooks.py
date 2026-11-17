@@ -77,7 +77,13 @@ def worker(number, destination, timeout, land_water_tile_degrees=2.0):
         if hashes() != initial:
             raise RuntimeError("Validation source changed during execution")
         records = json.loads((destination / "exports-validation.json").read_text())
-        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 4, 15: 1, 16: 1, 17: 1, 18: 0, 19: 1}[number]
+        detailed_countries_enabled = any(
+            isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "EXPORT_DETAILED_COUNTRIES"
+                                                for t in node.targets) and ast.literal_eval(node.value)
+            for cell in notebook.cells if cell.cell_type == "code" for node in ast.parse(cell.source).body)
+        expected_exports = {10: 3, 11: 2, 12: 0, 13: 0, 14: 4,
+                            15: 2 if detailed_countries_enabled else 1,
+                            16: 1, 17: 1, 18: 0, 19: 1, 20: 1}[number]
         if len(records) != expected_exports:
             raise AssertionError(f"Expected {expected_exports} validated exports, found {len(records)}")
         report.update(status="passed", exports=records)
@@ -160,6 +166,12 @@ def host(args):
                 "--security-opt=no-new-privileges", f"--memory={memory}g", "--cpus=12",
                 "-v", f"{ROOT}:/workspace:ro", "-v", f"{release}:/data/overture:ro",
                 "-v", f"{destination}:/results", "-w", "/workspace"]
+            if number == 20 and args.flight_data_dir:
+                flight_directory = args.flight_data_dir.resolve()
+                if not (flight_directory / "manifest.json").is_file():
+                    raise ValueError("--flight-data-dir must contain the prepared PlaneQuery 2026 Q3 manifest.json")
+                command += ["-v", f"{flight_directory}:/data/flights:ro"]
+                environment["FLIGHT_ROUTES_URI"] = "/data/flights"
             for key, value in environment.items():
                 command += ["-e", f"{key}={value}"]
             command += ["--entrypoint", "python3", IMAGE, "scripts/validate-notebooks.py",
@@ -190,12 +202,15 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--release-dir")
     parser.add_argument("--run-dir", type=Path)
-    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 20), default=list(range(10, 20)))
+    parser.add_argument("--notebooks", type=int, nargs="+", choices=range(10, 21), default=list(range(10, 20)),
+                        help="Notebook 20 is opt-in and requires a predownloaded PlaneQuery 2026 Q3 bundle")
+    parser.add_argument("--flight-data-dir", type=Path,
+                        help="Notebook 20 local bundle; default is release-dir/external_sources/planequery/2026-Q3")
     parser.add_argument("--ports-map-limit", type=int, default=50_000)
     parser.add_argument("--timeout", type=int, default=7200, help="Per-cell timeout in seconds")
     parser.add_argument("--land-water-tile-degrees", type=float, default=2.0,
                         help="Notebook 14 tile size in the execution copy; reduce when its coordinate guard fires")
-    parser.add_argument("--worker", type=int, choices=range(10, 20), help=argparse.SUPPRESS)
+    parser.add_argument("--worker", type=int, choices=range(10, 21), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.worker is not None:
         worker(args.worker, Path("/results"), args.timeout, args.land_water_tile_degrees)

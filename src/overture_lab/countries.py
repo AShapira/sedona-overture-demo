@@ -35,7 +35,38 @@ def validate_countries(countries) -> dict:
     return report
 
 
-def country_display_frame(countries, *, feature_limit: int, tolerance: float = 0.01,
+def country_display_frame(countries, *, feature_limit: int,
+                          coordinate_limit: int = 10_000_000):
+    """Collect every original country geometry, without any simplification."""
+    from pyspark.sql import functions as F
+    from .visualize import collect_geodataframe
+
+    for value in (feature_limit, coordinate_limit):
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError("Display budgets must be positive integers")
+    stats = countries.agg(
+        F.count("*").alias("features"),
+        F.sum(F.expr("ST_NPoints(geometry)")).alias("coordinates"),
+    ).first()
+    print(f"Original country map: {stats.features:,} features; "
+          f"{stats.coordinates or 0:,} coordinate positions (including ring closures and duplicates).", flush=True)
+    if stats.features > feature_limit:
+        raise ValueError(f"World map exceeds MAP_FEATURE_LIMIT={feature_limit}; no countries were omitted")
+    if (stats.coordinates or 0) > coordinate_limit:
+        raise ValueError(f"World map needs {stats.coordinates:,} coordinates, exceeding "
+                         f"MAP_COORDINATE_LIMIT={coordinate_limit:,}. Increase the coordinate budget; "
+                         "no geometry was simplified and no countries were omitted.")
+    validate_countries(countries)
+    display_frame = countries.select(
+        "id", "country", "geometry",
+        F.coalesce(F.element_at("names.common", F.lit("en")),
+                   F.col("names.primary"), F.col("country"), F.col("id")).alias("name"),
+    )
+    return collect_geodataframe(display_frame.orderBy("country", "id"), limit=feature_limit,
+                                columns=["id", "country", "name"])
+
+
+def country_context_frame(countries, *, feature_limit: int, tolerance: float = 0.01,
                           coordinate_limit: int = 750_000):
     """Check Spark-side budgets before collecting all simplified display features."""
     from pyspark.sql import functions as F

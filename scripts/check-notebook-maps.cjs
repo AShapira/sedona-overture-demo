@@ -1,30 +1,36 @@
 // Usage: PLAYWRIGHT_MODULE=/path/to/playwright node scripts/check-notebook-maps.cjs <attempt-dir>...
 // Uses a separate headless browser; never touches an existing browser session.
 // Set NOTEBOOK_MAP_SCREENSHOTS=false to test interactions without GPU readback captures.
+// Native GPU checks: NOTEBOOK_MAP_BROWSER_CHANNEL=msedge NOTEBOOK_MAP_SOFTWARE_RENDERING=false.
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const fs = require('node:fs');
 const path = require('node:path');
 const {pathToFileURL} = require('node:url');
 const assert = require('node:assert/strict');
+const timeoutMs = Number(process.env.NOTEBOOK_MAP_TIMEOUT_MS || 60000);
+assert.ok(Number.isFinite(timeoutMs) && timeoutMs > 0, 'NOTEBOOK_MAP_TIMEOUT_MS must be positive');
 
 (async () => {
   assert.ok(process.argv.length > 2, 'Provide at least one notebook attempt directory');
   const browser = await chromium.launch({headless: true,
-    args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']});
+    channel: process.env.NOTEBOOK_MAP_BROWSER_CHANNEL || undefined,
+    args: process.env.NOTEBOOK_MAP_SOFTWARE_RENDERING === 'false' ? ['--enable-gpu']
+      : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader']});
   let failures = 0;
   try {
     for (const directory of process.argv.slice(2)) {
       const reports = [];
       for (const name of fs.readdirSync(directory).filter(n => /^map-\d+\.html$/.test(n)).sort()) {
         const page = await browser.newPage({viewport: {width: 1440, height: 950}});
+        page.setDefaultTimeout(timeoutMs);
         const report = {map: name, errors: [], externalRequests: [], status: 'running'};
         page.on('pageerror', e => report.errors.push(e.message));
         page.on('request', r => {if (/^https?:/.test(r.url())) report.externalRequests.push(r.url());});
         await page.route(/^https?:/, route => route.abort());
         try {
-          await page.goto(pathToFileURL(path.resolve(directory, name)).href, {waitUntil: 'load'});
+          await page.goto(pathToFileURL(path.resolve(directory, name)).href, {waitUntil: 'load', timeout: timeoutMs});
           await page.waitForFunction(() => typeof deck !== 'undefined' && deck.layerManager?.getLayers().length > 0,
-            null, {timeout: 60000});
+            null, {timeout: timeoutMs});
           await page.waitForTimeout(1000);
           report.initial = await page.evaluate(() => ({
             view: deck.viewManager.getViewState('MapView'), coordinates: coordinateCounts,
@@ -32,6 +38,28 @@ const assert = require('node:assert/strict');
             canvas: [deck.canvas.width, deck.canvas.height],
           }));
           assert.ok(report.initial.canvas.every(n => n > 0));
+          report.renderer = await page.evaluate(() => {
+            const gl = deck.canvas.getContext('webgl2');
+            const info = gl?.getExtension('WEBGL_debug_renderer_info');
+            return info ? gl.getParameter(info.UNMASKED_RENDERER_WEBGL) : null;
+          });
+          if (report.initial.layers.some(layer => layer.id === 'world-countries')) {
+            assert.deepEqual(report.initial.layers.map(layer => layer.id), ['world-countries'],
+              'Experimental countries must not be displayed');
+            const mapsFile = path.join(directory, 'maps.json');
+            if (fs.existsSync(mapsFile)) {
+              const captured = JSON.parse(fs.readFileSync(mapsFile)).find(m => path.basename(m.path) === name);
+              assert.ok(captured, 'Missing captured coordinate counts');
+              assert.deepEqual(report.initial.coordinates, captured.coordinate_counts);
+            }
+            report.coordinateNotice = await page.locator('#map-coordinate-notice').innerText();
+            const features = report.initial.layers.reduce((n, layer) => n + layer.features, 0);
+            assert.ok(report.coordinateNotice.includes(`${features.toLocaleString('en-US')} features`),
+              'Displayed feature count does not match the map data');
+            const total = Object.values(report.initial.coordinates).reduce((a, b) => a + b, 0);
+            assert.ok(report.coordinateNotice.includes(total.toLocaleString('en-US')),
+              'Displayed coordinate notice does not match the map data');
+          }
           report.portPointStyles = await page.evaluate(() => deck.props.layers
             .filter(layer => ['ports-explicit', 'ports-candidate', 'ports-components'].includes(layer.id))
             .map(layer => ({id: layer.id, units: layer.props.pointRadiusUnits,
@@ -70,7 +98,7 @@ const assert = require('node:assert/strict');
             const view = await page.evaluate(() => deck.viewManager.getViewState('MapView'));
             assert.ok(Number.isFinite(view.zoom) && Number.isFinite(view.longitude));
             if (await button.getAttribute('data-view') === 'world' && report.initial.layers.some(
-                layer => layer.id === 'world-water-transportation')) {
+                layer => ['world-water-transportation', 'world-flight-routes'].includes(layer.id))) {
               for (const key of ['longitude', 'latitude', 'zoom']) {
                 assert.ok(Math.abs(view[key] - report.initial.view[key]) < 0.001,
                   `World view did not reset ${key} after pan/zoom`);
@@ -78,14 +106,14 @@ const assert = require('node:assert/strict');
             }
             report.viewButtons.push({name: await button.getAttribute('data-view'), view});
           }
-          if (report.initial.layers.some(layer => layer.id === 'world-water-transportation')) {
+          if (report.initial.layers.some(layer => ['world-water-transportation', 'world-flight-routes'].includes(layer.id))) {
             if (process.env.NOTEBOOK_MAP_SCREENSHOTS !== 'false') {
               await page.screenshot({path: path.join(directory, name.replace('.html', '-world.png'))});
             }
             // Many ferry segments are smaller than one pixel in a world view.
             // Zoom to a real route before testing precise zero-radius picking.
             report.hoverFocus = await page.evaluate(() => {
-              const layer = jsonInput.layers.find(l => l.id === 'world-water-transportation');
+              const layer = jsonInput.layers.find(l => ['world-water-transportation', 'world-flight-routes'].includes(l.id));
               for (const feature of layer.data.features) {
                 const lines = feature.geometry.type === 'LineString'
                   ? [feature.geometry.coordinates] : feature.geometry.coordinates;
@@ -99,10 +127,10 @@ const assert = require('node:assert/strict');
                 const fitted = deck.getViewports()[0].fitBounds(bounds, {padding: 60, maxZoom: 13});
                 deck.setProps({initialViewState: {longitude: fitted.longitude, latitude: fitted.latitude,
                   zoom: fitted.zoom, bearing: 0, pitch: 0}});
-                window.waterHoverFeature = feature;
+                window.routeHoverFeature = feature;
                 return {source_id: feature.properties.source_id, bounds};
               }
-              throw new Error('No suitable water route found for hover test');
+              throw new Error('No suitable route found for hover test');
             });
             await page.waitForTimeout(500);
           }
@@ -122,8 +150,8 @@ const assert = require('node:assert/strict');
                 if (index >= 0) coordinates(value[index]);
               }
             }
-            if (window.waterHoverFeature) {
-              const geometry = window.waterHoverFeature.geometry;
+            if (window.routeHoverFeature) {
+              const geometry = window.routeHoverFeature.geometry;
               const line = geometry.type === 'LineString' ? geometry.coordinates : geometry.coordinates[0];
               const a = viewport.project(line[0]), b = viewport.project(line[1]);
               candidates.push(viewport.unproject([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]));

@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from overture_lab.config import load_settings
-from overture_lab.countries import select_world_countries, validate_countries, country_display_frame
+from overture_lab.countries import select_world_countries, validate_countries, country_display_frame, country_context_frame
 from overture_lab.outputs import write_single_geoparquet
 from overture_lab.spark import create_sedona
 
@@ -39,7 +39,7 @@ def main():
     settings = replace(load_settings(), write_derived=True,
                        derived_output_mode="s3" if args.s3 else "local",
                        derived_local_fallback_dir=str(args.output / "exports"))
-    spark = create_sedona(settings, "countries-integration")
+    spark = create_sedona(settings, "countries-integration", overlay_ng=True)
     from pyspark.sql import functions as F
     try:
         polygon = "POLYGON ((0 0, 0.0001 0.00002, 0.0002 0, 4 0, 4 4, 0 4, 0 0), (1 1, 1 2, 2 2, 2 1, 1 1))"
@@ -57,6 +57,7 @@ def main():
             "named_struct('primary', id, 'common', map('en', id)) AS names",
             "array(named_struct('dataset', 'synthetic', 'record_id', id)) AS sources",
             "named_struct('mode', 'fixture', 'countries', array(country)) AS perspectives",
+            "concat('division-', country) AS division_id",
             "'divisions' AS theme", "'division_area' AS feature_type",
         ).drop("wkt")
         # Match nullable nested fields in a real GeoParquet read, rather than
@@ -72,10 +73,19 @@ def main():
         assert set(preview.id) == {"a-land", "b-dual", "a-perspective"}
         assert len(preview.loc[preview.id == "b-dual"].geometry.iloc[0].geoms) == 2
         assert len(preview.loc[preview.id == "a-land"].geometry.iloc[0].interiors) == 1
+        import shapely
+        from overture_lab.visualize import geometry_coordinate_count
+        source_geometry = {r.id: shapely.from_wkb(bytes(r.wkb)) for r in countries.selectExpr(
+            "id", "ST_AsBinary(geometry) AS wkb").collect()}
+        assert all(row.geometry.equals_exact(source_geometry[row.id], 0) for row in preview.itertuples())
+        assert geometry_coordinate_count(preview) == sum(shapely.get_num_coordinates(g) for g in source_geometry.values())
+        assert "full_resolution_preview" not in preview.columns
+        context = country_context_frame(countries, feature_limit=3, tolerance=0.01)
+        assert geometry_coordinate_count(context) < geometry_coordinate_count(preview)
         for kwargs, error in (({"feature_limit": 2}, "MAP_FEATURE_LIMIT"),
-                              ({"feature_limit": 3, "coordinate_limit": 1}, "MAP_COORDINATE_LIMIT"),
-                              ({"feature_limit": 3, "tolerance": float("nan")}, "finite")):
+                              ({"feature_limit": 3, "coordinate_limit": 1}, "MAP_COORDINATE_LIMIT")):
             expect_failure(lambda: country_display_frame(countries, **kwargs), error)
+        expect_failure(lambda: country_context_frame(countries, feature_limit=3, tolerance=float("nan")), "finite")
         expect_failure(lambda: validate_countries(countries.limit(0)), "No land-country")
         for expression in ("ST_GeomFromWKT('POINT (0 0)')", "ST_GeomFromWKT('POLYGON EMPTY')",
                            "ST_GeomFromWKT('POLYGON ((0 0, 2 2, 2 0, 0 2, 0 0))')", "NULL"):
@@ -101,6 +111,10 @@ def main():
         with tempfile.TemporaryDirectory(prefix="country-release-") as release:
             areas.drop("theme", "feature_type").write.format("geoparquet").option("geoparquet.version", "1.0.0").save(
                 f"{release}/theme=divisions/type=division_area")
+            from check_surfaces_spark import fixture
+            fixture(spark, [("land-a", "land", "land", polygon),
+                            ("land-b", "land", "land", multipart)]).write.format("geoparquet").save(
+                f"{release}/theme=base/type=land")
             spark.stop()
             notebook = nbformat.read(Path(__file__).resolve().parents[1] /
                                      "notebooks/15_world_countries.ipynb", as_version=4)
@@ -109,14 +123,17 @@ def main():
                                          "DERIVED_OUTPUT_MODE": "s3" if args.s3 else "local",
                                          "SEDONA_SCRATCH_DIR": str(args.output.resolve()),
                                          "DERIVED_LOCAL_FALLBACK_DIR": str((args.output / "notebook-exports").resolve())}):
-                NotebookClient(notebook, timeout=180, kernel_name="python3").execute()
+                NotebookClient(notebook, timeout=300, kernel_name="python3").execute()
             nbformat.write(notebook, args.output / "15_world_countries.executed.ipynb")
             exports = [ast.literal_eval(output["data"]["text/plain"])
                        for cell in notebook.cells for output in cell.get("outputs", [])
                        if "geoparquet_uri" in output.get("data", {}).get("text/plain", "")]
-            assert len(exports) == 1 and exports[0]["status"] == "written", exports
+            assert len(exports) == 2 and all(e["status"] == "written" for e in exports), exports
             assert exports[0]["row_count"] == 3, exports
+            assert exports[1]["geoparquet_uri"].endswith('/detailed_countries_experimental.geoparquet')
+            assert exports[1]["exact_round_trip"] is True
             report["notebook_export"] = exports[0]
+            report["experimental_notebook_export"] = exports[1]
             if not args.s3:
                 assert Path(exports[0]["geoparquet_uri"]).is_file()
                 assert "s3a://" not in exports[0]["geoparquet_uri"]

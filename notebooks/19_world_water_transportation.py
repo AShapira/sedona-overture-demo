@@ -35,7 +35,7 @@ import os
 
 from pyspark import StorageLevel
 from overture_lab.config import load_settings
-from overture_lab.countries import select_world_countries, country_display_frame
+from overture_lab.countries import select_world_countries, country_context_frame
 from overture_lab.outputs import write_single_geoparquet
 from overture_lab.region_overview import overview_basemap
 from overture_lab.spark import create_sedona, read_type
@@ -138,7 +138,7 @@ water_map_frame = water_transportation_display_frame(
 )
 country_map_frame = None
 if SHOW_COUNTRIES:
-    country_map_frame = country_display_frame(
+    country_map_frame = country_context_frame(
         select_world_countries(read_type(spark, settings, "divisions", "division_area")),
         feature_limit=COUNTRY_MAP_FEATURE_LIMIT, tolerance=COUNTRY_MAP_TOLERANCE,
         coordinate_limit=COUNTRY_MAP_COORDINATE_LIMIT,

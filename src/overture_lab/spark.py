@@ -12,7 +12,8 @@ if TYPE_CHECKING:
     from pyspark.sql import DataFrame, SparkSession
 
 
-def create_sedona(settings: LabSettings, app_name: str, *, overlay_ng: bool = False) -> "SparkSession":
+def create_sedona(settings: LabSettings, app_name: str, *, overlay_ng: bool = False,
+                  input_uris: tuple[str, ...] = ()) -> "SparkSession":
     scratch_status(settings)
     settings.prepare_process_environment()
 
@@ -45,7 +46,7 @@ def create_sedona(settings: LabSettings, app_name: str, *, overlay_ng: bool = Fa
 
     uses_s3 = settings.release_uri.startswith("s3a://") or bool(
         settings.derived_output_uri
-    )
+    ) or any(uri.startswith("s3a://") for uri in input_uris)
     if uses_s3:
         if settings.s3_endpoint:
             builder = builder.config(

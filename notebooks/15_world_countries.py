@@ -21,12 +21,17 @@ from overture_lab.countries import (
 )
 from overture_lab.spark import create_sedona, read_type
 from overture_lab.outputs import write_single_geoparquet
+from overture_lab.detailed_countries import (
+    DetailedCountryOptions, build_detailed_countries, export_detailed_countries,
+)
 
 WRITE_COUNTRIES = os.getenv("WRITE_DERIVED", "false").lower() == "true"  # set True to export
 S3_OUTPUT_URI = os.getenv("DERIVED_OUTPUT_URI", "")  # e.g. "s3a://bucket/derived"
 OUTPUT_MODE = os.getenv("DERIVED_OUTPUT_MODE", "s3")  # "s3" or "local"
-MAP_TOLERANCE = 0.01  # degrees; display copies only
-MAP_COORDINATE_LIMIT = 750_000
+MAP_COORDINATE_LIMIT = 10_000_000
+EXPORT_DETAILED_COUNTRIES = True  # experimental export only; also requires WRITE_COUNTRIES
+DETAILED_COUNTRY_TILE_DEGREES = 0.5
+DETAILED_COUNTRY_MAX_TILE_COORDINATES = 2_000_000
 
 # Configure S3_ENDPOINT, S3_REGION, S3_ACCESS_KEY, S3_SECRET_KEY and transport
 # settings in the lab environment, never in notebook source or saved outputs.
@@ -37,7 +42,7 @@ os.environ.update(DERIVED_OUTPUT_MODE=OUTPUT_MODE, DERIVED_OUTPUT_URI=S3_OUTPUT_
                   WRITE_DERIVED=str(WRITE_COUNTRIES and (OUTPUT_MODE == "local" or bool(S3_OUTPUT_URI))).lower(),
                   ALLOW_LOCAL_DERIVED_FALLBACK="false")
 settings = load_settings(include_territorial_waters=False)
-spark = create_sedona(settings, "15-world-countries")
+spark = create_sedona(settings, "15-world-countries", overlay_ng=True)
 display({"release": settings.release, "extent": "land only", "scope": "world",
          "export_enabled": WRITE_COUNTRIES, "output_mode": settings.derived_output_mode,
          "s3_destination_configured": bool(settings.derived_output_uri)})
@@ -63,23 +68,23 @@ countries.groupBy("country").count().orderBy("country").show(300, truncate=False
 # The renderer is embedded locally; no external basemap or CDN is required.
 # Colors distinguish codes and do not indicate sovereignty or recognition.
 #
-# Topology-preserving simplification affects **only this preview**. If it creates
-# invalid geometry, that feature uses its original geometry in the preview, and
-# the summary reports how many features required that fallback. The feature
-# and coordinate budgets are checked before driver collection. An oversized map
-# fails explicitly: raise `MAP_FEATURE_LIMIT` in the lab environment (and its
-# enclosing sample limits), or adjust the display tolerance/coordinate budget.
-# No country is silently dropped. The export cell can run independently of map
-# preparation if the preview budget is exceeded. The web map projection clips
-# the polar extremes visually; the export retains them and all source vertices.
+# Every original country geometry is displayed as supplied: no simplification,
+# clipping, or sampling. The coordinate count includes ring-closing positions
+# and duplicates, not individual x/y ordinates. The count is printed before
+# rendering and remains visible above the map. Release 2026-07-22.0 contains
+# 219 features and 5,944,875 coordinate positions. This can take time to render.
+# Feature and coordinate budgets fail explicitly before collection; increase
+# the named budget to display a larger release. No country is silently dropped.
+# Export cells can run independently if the map exceeds its budget. Web Mercator
+# visually clips polar extremes, but all source coordinates are supplied.
 
 # %%
 import pydeck as pdk
-from overture_lab.visualize import build_interactive_deck, offline_deck_display
+from overture_lab.visualize import build_interactive_deck, offline_deck_display, geometry_coordinate_count
 
 map_gdf = country_display_frame(
     countries, feature_limit=settings.map_feature_limit,
-    tolerance=MAP_TOLERANCE, coordinate_limit=MAP_COORDINATE_LIMIT,
+    coordinate_limit=MAP_COORDINATE_LIMIT,
 ).rename(columns={"id": "source_id"})  # avoid GeoJSON's top-level numeric feature id
 palette = ([31, 119, 180], [255, 127, 14], [44, 160, 44], [214, 39, 40],
            [148, 103, 189], [140, 86, 75], [227, 119, 194], [188, 189, 34])
@@ -96,9 +101,9 @@ deck = build_interactive_deck(
     tooltip={"text": "{name}\nCountry: {country}\nSource ID: {source_id}"},
 )
 display({"mapped_features": len(map_gdf), "source_features": country_report["features"],
-         "full_resolution_preview_features": int(map_gdf.full_resolution_preview.sum()),
-         "display_tolerance_degrees": MAP_TOLERANCE})
-display(offline_deck_display(deck, height=650,
+         "displayed_coordinate_positions": geometry_coordinate_count(map_gdf),
+         "geometry_policy": "original source geometry; no simplification"})
+display(offline_deck_display(deck, height=650, feature_count=len(map_gdf),
                             attribution=f"Overture Maps — {settings.release}; land-country areas"))
 
 # %% [markdown]
@@ -118,7 +123,7 @@ display(offline_deck_display(deck, height=650,
 # The writer verifies schema, row count, geometry, metadata, and final inventory.
 # It never overwrites a previous run or switches destinations after a failure.
 # Failed writes report the partial prefix. Single-file output uses one final
-# Spark writer; display simplification and budgets do not affect the export.
+# Spark writer; display budgets do not affect the export.
 
 # %%
 if not WRITE_COUNTRIES:
@@ -131,6 +136,72 @@ else:
         object_name="countries.geoparquet",
     ).as_dict()
 display(country_export)
+
+# %% [markdown]
+# ## Experimental export: territorial country polygons intersect physical land
+#
+# `detailed country polygon = territorial country polygon ∩ physical land`
+#
+# Overture's original land-country polygon can have a coarse coastline even
+# without display simplification (for example around Haifa). This experiment
+# starts with `division_area`, `subtype='country' AND is_territorial=true`, matched
+# to the displayed countries by `division_id`. Territorial geometry includes
+# coastal waters and supplies the administrative extent. Intersecting it with
+# `base/land`, `subtype='land' AND class='land'`, supplies the detailed coastline.
+# Starting with the coarse land-country polygon would still cut off coastal
+# features outside that polygon. Territorial source representations remain
+# separate, including multiple representations with the same country code.
+# Missing territorial matches are an error, never a silent omission.
+#
+# Sedona subdivides large inputs, clips them to globally aligned 0.5° tiles,
+# dissolves physical land within each tile, then intersects it with each
+# territorial representation. Tile boundaries partition the output; there is
+# no worldwide dissolve or collection into Python. A tile operation exceeding
+# the coordinate guard stops with diagnostics; reduce the tile size. OverlayNG
+# and RelateNG run without simplification, precision reduction, buffering, or
+# automatic repair. Start a fresh kernel if the current one uses older engines.
+# Physical land is a coastline-based landmass layer: inland water is not
+# separately subtracted. This is a derived experiment, not a correction to
+# Overture's administrative data, and it inherits source coverage and disputes.
+#
+# The separate `detailed_countries_experimental.geoparquet` contains one nonempty
+# Polygon/MultiPolygon per territorial source feature and tile. Rows carry a
+# derived ID, country code/name, division ID, `territorial_area_id`, `tile_id`,
+# release, geometry policy, and exact bbox. `territorial_sources` retains the
+# source area's attribution; `land_sources` aggregates dataset/license pairs
+# contributing to that tile's dissolved land, not individual output vertices.
+# Rejoin `territorial_area_id` to the release for the complete source attributes.
+# Empty territorial intersections are reported explicitly.
+#
+# This output is **never displayed on the map**. `EXPORT_DETAILED_COUNTRIES=False`
+# skips it. Disabled writes or a missing destination skip the extra land scan
+# and construction entirely. The separate export follows the existing local/S3
+# destination, unique-run, no-fallback rules. Schema, metadata, geometry, bbox,
+# row count, and complete row fingerprints are verified after reloading.
+
+# %%
+detailed_country_export = {}
+if EXPORT_DETAILED_COUNTRIES and settings.write_derived:
+    detailed_countries = None
+    try:
+        detailed_countries, detailed_country_report = build_detailed_countries(
+            areas, countries, read_type(spark, settings, "base", "land"),
+            release=settings.release, release_uri=settings.release_uri,
+            options=DetailedCountryOptions(DETAILED_COUNTRY_TILE_DEGREES,
+                                           DETAILED_COUNTRY_MAX_TILE_COORDINATES),
+            progress=lambda event: print(event, flush=True),
+        )
+        display(detailed_country_report)
+        detailed_country_export = export_detailed_countries(detailed_countries, spark, settings)
+    finally:
+        if detailed_countries is not None:
+            detailed_countries.unpersist()
+else:
+    detailed_country_export = {
+        "status": "disabled" if not EXPORT_DETAILED_COUNTRIES else "dry-run",
+        "detail": "Enable EXPORT_DETAILED_COUNTRIES and WRITE_COUNTRIES with a configured destination; no overlay was built.",
+    }
+display(detailed_country_export)
 
 # %% [markdown]
 # ## Reload the exported data

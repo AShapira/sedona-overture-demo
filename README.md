@@ -2,7 +2,7 @@
 
 An air-gap-friendly, VS Code notebook curriculum for learning how to inspect,
 query, transform, analyse, and visualise a complete Overture Maps release with
-Apache Sedona. The same twenty lessons support a read-only filesystem release
+Apache Sedona. The same twenty-one lessons support a read-only filesystem release
 or an S3A-only release served to Docker Desktop on a Windows host.
 
 The checked local reference release is `2026-07-22.0` (569 GiB). The notebooks
@@ -34,6 +34,44 @@ only collect explicitly bounded results for tables or maps.
 | `17_reconstructing_major_roads` | Complete medium-region motorway/trunk/primary carriageways, Road 6 before/after, source membership, diagnostics, optional GeoParquet |
 | `18_city_roads` | City boundary plus metric buffer, complete road-class selection, counts and offline interactive map; Ofakim example |
 | `19_world_water_transportation` | All worldwide water transportation segments, one complete GeoParquet export, and an offline interactive world map |
+| `20_world_flight_routes` | PlaneQuery 2026 Q3 inferred connections, complete geodesic GeoParquet, and an offline map of recurring pairs |
+
+Notebook 20 uses **PlaneQuery / ADSB.lol observations for July–September 2026**.
+On a connected preparation machine, run:
+
+```bash
+python3 scripts/download-planequery.py --output /staging/planequery/2026-Q3
+```
+
+The helper downloads all 92 daily partitions (935 MB), pinned daily provenance,
+and a pinned OurAirports reference, checks upstream digests, and writes a complete
+manifest and SHA-256 inventory. `--resume` verifies and continues an interrupted
+`.partial` folder. Transfer the whole finished bundle to
+`<OVERTURE_RELEASE_URI>/external_sources/planequery/2026-Q3`, or set
+`FLIGHT_ROUTES_URI` to another local folder or internal `s3a://bucket/prefix`.
+The notebook verifies every input hash and never downloads missing data. Its
+remarks document immutable source URLs, licenses, download/transfer commands,
+and the choice of a single October 6 airport reference for quarterly geometry.
+
+These are **inferred observed airport connections**, including general aviation,
+with uneven ADS-B coverage and endpoint inference errors. They are not a complete
+scheduled airline network. WGS84 shortest geodesics model connections rather than
+actual aircraft tracks, and are split at the antimeridian in the stored geometry.
+Every valid directed airport pair is exported to `world_flight_routes.geoparquet`,
+with observation counts, active days, monthly counts, endpoint data and provenance.
+The map shows all pairs observed on at least 14 distinct days by default
+(`MAP_MIN_ACTIVE_DAYS`), independently of the complete export. Quality totals,
+the source manifest, and every excluded observation are saved beside the layer.
+Country context is optional and the default map makes no external requests.
+
+Validate after staging the bundle:
+`python3 scripts/validate-notebooks.py --notebooks 20 --run-dir .artifacts/planequery/validation`.
+For a separately staged source directory, add `--flight-data-dir /path/to/planequery/2026-Q3`.
+Run `bash scripts/test-flights-s3.sh` for PlaneQuery fixture S3 input/output/audit
+checks on an isolated internal container network. The shared browser checker
+exercises notebook 20's hover, pan/zoom, toggles, and world reset. Older OpenFlights
+preparation/helper code remains available for reproducing historical experiments;
+notebook 20 now uses PlaneQuery exclusively.
 
 Notebook 19 selects every `transportation/segment` with `subtype='water'`,
 independently of region and sample settings. It exports one full-resolution
@@ -145,11 +183,14 @@ Notebook 15 selects all `divisions/division_area` features with
 `subtype='country' AND is_land=true`, independently of regional presets.
 Source country-level territories, disputed representations, IDs, attributes,
 holes, and multipart geometry are retained. Its offline interactive map provides
-pan, zoom, and name/code/ID tooltips, with topology-preserving simplification
-only for display; features whose simplified geometry is invalid retain their
-original geometry in the preview. Feature and coordinate budgets fail explicitly
-rather than silently omit countries; adjust `MAP_TOLERANCE`, `MAP_COORDINATE_LIMIT`, or the
-environment's `MAP_FEATURE_LIMIT` if needed.
+pan, zoom, and name/code/ID tooltips using every original geometry coordinate,
+without simplification, sampling, or clipping. The total displayed coordinate
+positions are printed before rendering and shown above the map, including ring
+closures and duplicates. Release `2026-07-22.0` contains 219 country features and
+5,944,875 positions. `MAP_COORDINATE_LIMIT` defaults to 10,000,000; feature and
+coordinate budgets fail explicitly rather than silently omit countries. Raise
+the named budget if needed. The water and flight lessons retain their separate
+generalized country backgrounds.
 
 Set `S3_OUTPUT_URI` and `WRITE_COUNTRIES=True` in the notebook configuration
 cell, or configure `DERIVED_OUTPUT_URI` and `WRITE_DERIVED=true` in the lab
@@ -168,6 +209,66 @@ For local country exports, select `OUTPUT_MODE="local"` in notebook 15 or set
 The shared `DERIVED_LOCAL_FALLBACK_DIR` must be inside `SEDONA_SCRATCH_DIR`;
 use host-mounted directories to retain files after a container exits. Local
 mode does not require an S3 destination and never writes to S3.
+
+Notebook 15 also has an **experimental export**, enabled by
+`EXPORT_DETAILED_COUNTRIES=True` when country writing is enabled and configured:
+
+```text
+detailed country polygon = territorial country polygon ∩ physical land
+```
+
+The original land-country polygons can have coarse coastlines even without map
+simplification. The experiment matches `division_area` country rows with
+`is_territorial=true` to the displayed countries by `division_id`, then intersects
+them with `base/land` rows where `subtype='land' AND class='land'`. Territorial
+polygons supply administrative extent, including coastal waters; physical land
+supplies the detailed coastline. Using the coarse land-country polygon as the
+starting boundary would still cut off coastal features outside it. This follows
+the source territorial representations and does not resolve disputed coverage.
+Physical land is a coastline-based landmass layer: inland water is not separately
+subtracted.
+
+Large inputs are subdivided and clipped to globally aligned 0.5° tiles in Sedona.
+Physical land is dissolved per tile, then intersected with each territorial source
+representation. One Polygon/MultiPolygon row is retained per nonempty source/tile
+combination; country codes are not used to merge distinct representations. Tile
+seams partition the coverage, with no worldwide dissolve or Python collection.
+OverlayNG and RelateNG use full floating-point precision without simplification,
+precision reduction, buffering, or automatic repair. Use a fresh notebook kernel.
+`DETAILED_COUNTRY_MAX_TILE_COORDINATES` defaults to 2,000,000 before tile operations;
+an exceeded guard names affected inputs/tiles and asks to reduce
+`DETAILED_COUNTRY_TILE_DEGREES`. Missing territorial matches stop the construction;
+empty territorial intersections are reported.
+
+The additional `detailed_countries_experimental.geoparquet` uses a separate unique
+run directory under `world-countries-detailed-experimental`, with the same local/S3
+destination as the original `countries.geoparquet`. Derived IDs identify pieces;
+`territorial_area_id` and `division_id` identify the source country representation.
+Rows also carry country code/name, tile ID/size, release, experimental geometry
+policy, source attribution, and recomputed bbox. `territorial_sources` retains
+source-area attribution; `land_sources` aggregates dataset/license pairs for the
+tile's dissolved land. The named source release retains feature-level lineage.
+Schema, geometry, counts, bbox, GeoParquet metadata, and complete row fingerprints
+are verified after reload. The original country export is unchanged.
+
+The experimental layer is never displayed on the map. Disabling its switch or
+country writes skips the extra land scan and construction entirely. Run
+`tests/check_detailed_countries_spark.py --output <new-output-directory>` in the
+pinned Sedona image for independent geometry and local export fixtures.
+`scripts/test-countries-s3.sh` checks both exports against disposable fixture S3.
+Full notebook validation expects two exports when the experiment is enabled:
+
+```bash
+python3 scripts/validate-notebooks.py --notebooks 15 \
+  --run-dir .artifacts/detailed-country-validation/full
+```
+
+Full-resolution map validation benefits from a browser with hardware acceleration.
+The browser checker accepts `NOTEBOOK_MAP_BROWSER_CHANNEL=msedge` and
+`NOTEBOOK_MAP_SOFTWARE_RENDERING=false` when run with native Windows Node/Playwright;
+its report records the graphics renderer. `NOTEBOOK_MAP_TIMEOUT_MS` controls the
+per-page timeout. The default Linux check uses software rendering, which can be
+slow for nearly six million coordinates.
 
 ### Full-data local validation of notebooks 10–19
 
